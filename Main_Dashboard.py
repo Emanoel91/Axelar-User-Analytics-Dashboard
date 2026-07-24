@@ -35,15 +35,13 @@ def load_data():
 
         period = f"{year}-{month}"
 
-        for file in sorted(DATA_FOLDER.glob("*.csv")):
+    for file in sorted(DATA_FOLDER.glob("*.csv")):
 
-        try:
-            df = pd.read_csv(file)
-        except Exception as e:
-            st.error(f"{file.name} --> {e}")
-            continue
+    st.write(file)
 
-        df = pd.read_csv(file)
+    df = pd.read_csv(file)
+
+       df = pd.read_csv(file)
 
         users = set(df["key"].dropna())
 
