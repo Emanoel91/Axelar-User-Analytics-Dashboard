@@ -35,11 +35,15 @@ def load_data():
 
         period = f"{year}-{month}"
 
-        for file in sorted(DATA_FOLDER.glob("*.csv")):
+        try:
+    df = pd.read_csv(file)
 
-        st.write(file)
+    # اگر فایل هدر ندارد یا خالی است
+    if df.empty or "key" not in df.columns:
+        continue
 
-        df = pd.read_csv(file)
+except pd.errors.EmptyDataError:
+    continue
 
         users = set(df["key"].dropna())
 
@@ -98,7 +102,7 @@ with col1:
 with col2:
 
     fig2 = px.pie(
-        donut_df, 
+        donut_df,
         names="Service",
         values="Users",
         hole=0.6,
