@@ -10,6 +10,7 @@ st.set_page_config(
 
 st.title("📊 Axelar User Analytics Dashboard")
 
+# مسیر پوشه فایل‌های CSV
 DATA_FOLDER = Path("User_Data_History")
 
 
@@ -25,25 +26,31 @@ def load_data():
 
         name = file.stem
 
-        if "-" not in name:
+        # فقط فایل‌هایی با فرمت gmp-YYYY-MM یا tt-YYYY-MM
+        parts = name.split("-")
+        if len(parts) != 3:
             continue
 
-        service = name.split("-")[0]
-
-        year = name.split("-")[1]
-        month = name.split("-")[2]
+        service = parts[0]
+        year = parts[1]
+        month = parts[2]
 
         period = f"{year}-{month}"
 
+        # خواندن فایل با مدیریت خطا
         try:
-    df = pd.read_csv(file)
+            df = pd.read_csv(file)
 
-    # اگر فایل هدر ندارد یا خالی است
-    if df.empty or "key" not in df.columns:
-        continue
+            # اگر فایل خالی باشد یا ستون key نداشته باشد
+            if df.empty or "key" not in df.columns:
+                continue
 
-except pd.errors.EmptyDataError:
-    continue
+        except pd.errors.EmptyDataError:
+            continue
+
+        except Exception as e:
+            st.warning(f"⚠️ Could not read {file.name}: {e}")
+            continue
 
         users = set(df["key"].dropna())
 
@@ -57,7 +64,7 @@ except pd.errors.EmptyDataError:
 
         if service == "gmp":
             gmp_users.update(users)
-        else:
+        elif service == "tt":
             tt_users.update(users)
 
     monthly_df = pd.DataFrame(monthly_rows)
@@ -85,19 +92,23 @@ with col1:
         color="Service",
         barmode="stack",
         text="Users",
+        color_discrete_map={
+            "GMP": "#ff7400",
+            "Token Transfer": "#00a1f7",
+        },
     )
+
+    fig.update_traces(textposition="inside")
 
     fig.update_layout(
         title="Monthly Active Users",
         xaxis_title="Month",
         yaxis_title="Users",
-        legend_title="Service",
         hovermode="x unified",
         height=500,
     )
 
     st.plotly_chart(fig, use_container_width=True)
-
 
 with col2:
 
@@ -106,17 +117,21 @@ with col2:
         names="Service",
         values="Users",
         hole=0.6,
-    )
-
-    fig2.update_layout(
-        title="Unique Users by Service",
-        height=500,
-        showlegend=True,
+        color="Service",
+        color_discrete_map={
+            "GMP": "#ff7400",
+            "Token Transfer": "#00a1f7",
+        },
     )
 
     fig2.update_traces(
         textposition="inside",
         textinfo="percent+value",
+    )
+
+    fig2.update_layout(
+        title="Unique Users by Service",
+        height=500,
     )
 
     st.plotly_chart(fig2, use_container_width=True)
