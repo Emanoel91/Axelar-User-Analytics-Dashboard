@@ -37,11 +37,11 @@ def load_data():
 
         for file in sorted(DATA_FOLDER.glob("*.csv")):
 
-    try:
-        df = pd.read_csv(file)
-    except Exception as e:
-        st.error(f"{file.name} --> {e}")
-        continue
+        try:
+            df = pd.read_csv(file)
+        except Exception as e:
+            st.error(f"{file.name} --> {e}")
+            continue
 
         df = pd.read_csv(file)
 
