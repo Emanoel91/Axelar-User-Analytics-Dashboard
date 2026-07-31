@@ -195,13 +195,13 @@ with kpi1:
 
 with kpi2:
     st.metric(
-        label="New Users",
+        label="New Users (30d)",
         value=f"{new_users:,}"
     )
 
 with kpi3:
     st.metric(
-        label="Returning Users",
+        label="Returning Users (30d)",
         value=f"{returning_users:,}",
         help="Users who were active in the latest month and had at least one activity before the latest month."
     )
