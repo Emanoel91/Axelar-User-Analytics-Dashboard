@@ -340,15 +340,15 @@ with col1:
         y=["New Users", "Returning Users"],
         barmode="stack",
         color_discrete_map={
-            "New Users": "#00a1f7",
-            "Returning Users": "#ff7400",
+            "New Users": "#58fd86",
+            "Returning Users": "#fdc358",
         },
     )
 
     fig.add_scatter(
         x=growth_df["Month"],
         y=growth_df["Active Users"],
-        mode="lines+markers",
+        mode="lines",
         name="Active Users",
         line=dict(color="black", width=3),
     )
