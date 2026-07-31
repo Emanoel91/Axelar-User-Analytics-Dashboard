@@ -123,6 +123,19 @@ def load_data():
 # -----------------------------
 
 monthly_df, donut_df = load_data()
+# ==========================================
+# KPI Calculation
+# ==========================================
+latest_month = all_data["Month"].max()
+latest_df = all_data[all_data["Month"] == latest_month]
+total_unique_users = all_data["key"].nunique()
+first_month = all_data.groupby("key")["Month"].min()
+new_users = (first_month == latest_month).sum()
+returning_users = latest_df[
+    latest_df["key"].isin(
+        first_month[first_month < latest_month].index
+    )
+]["key"].nunique()
 
 # -----------------------------
 # Charts
@@ -189,20 +202,6 @@ with col2:
         fig2,
         use_container_width=True
     )
-
-# ==========================================
-# KPI Calculation
-# ==========================================
-latest_month = all_data["Month"].max()
-latest_df = all_data[all_data["Month"] == latest_month]
-total_unique_users = all_data["key"].nunique()
-first_month = all_data.groupby("key")["Month"].min()
-new_users = (first_month == latest_month).sum()
-returning_users = latest_df[
-    latest_df["key"].isin(
-        first_month[first_month < latest_month].index
-    )
-]["key"].nunique()
 
 # ==========================================
 # KPI Row
