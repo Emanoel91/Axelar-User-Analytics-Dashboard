@@ -395,3 +395,105 @@ with col2:
         fig2,
         use_container_width=True,
     )
+
+# ==========================================================
+# Additional KPI Calculation
+# ==========================================================
+
+# مرتب‌سازی ماه‌ها
+months = sorted(all_data["Month"].unique())
+
+latest_month = months[-1]
+previous_month = months[-2]
+
+# کاربران آخرین ماه
+latest_users = set(
+    all_data.loc[
+        all_data["Month"] == latest_month,
+        "key"
+    ]
+)
+
+# کاربران ماه قبل
+previous_users = set(
+    all_data.loc[
+        all_data["Month"] == previous_month,
+        "key"
+    ]
+)
+
+# کاربران قبل از ماه قبل
+historical_users = set(
+    all_data.loc[
+        all_data["Month"] < previous_month,
+        "key"
+    ]
+)
+
+# Reactivated Users
+reactivated_users = len(
+    (latest_users - previous_users) & historical_users
+)
+
+# Churned Users
+churned_users = len(
+    previous_users - latest_users
+)
+
+# Monthly Active Users
+mau = len(latest_users)
+
+# User Growth %
+previous_mau = len(previous_users)
+
+if previous_mau > 0:
+    user_growth = (mau - previous_mau) / previous_mau * 100
+else:
+    user_growth = 0
+
+# ==========================================================
+# KPI Row 2
+# ==========================================================
+
+kpi4, kpi5, kpi6, kpi7 = st.columns(4)
+
+with kpi4:
+    st.metric(
+        label="Reactivated Users",
+        value=f"{reactivated_users:,}",
+        help=(
+            "Users who were active in the latest month, "
+            "inactive in the previous month, "
+            "but had activity before that."
+        )
+    )
+
+with kpi5:
+    st.metric(
+        label="Churned Users",
+        value=f"{churned_users:,}",
+        help=(
+            "Users who were active in the previous month "
+            "but were not active in the latest month."
+        )
+    )
+
+with kpi6:
+    st.metric(
+        label="User Growth %",
+        value=f"{user_growth:.2f}%",
+        help=(
+            "Percentage change in Monthly Active Users (MAU) "
+            "compared with the previous month."
+        )
+    )
+
+with kpi7:
+    st.metric(
+        label="Monthly Active Users",
+        value=f"{mau:,}",
+        help=(
+            "Total number of unique users "
+            "who were active in the latest month."
+        )
+    )
