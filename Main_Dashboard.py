@@ -550,3 +550,115 @@ with kpi11:
         value=f"${median_volume:,.2f}",
         help="Median transfer volume per unique user across the entire dataset."
     )
+
+# ==========================================================
+# Advanced Distribution Metrics
+# ==========================================================
+
+# Total Volume
+total_volume = user_stats["Total_Volume"].sum()
+
+# -------------------------------
+# Top 100 Users Share
+# -------------------------------
+
+top100_volume = (
+    user_stats
+    .nlargest(100, "Total_Volume")["Total_Volume"]
+    .sum()
+)
+
+top100_share = (
+    top100_volume / total_volume * 100
+    if total_volume > 0 else 0
+)
+
+# -------------------------------
+# Whale Dominance
+# Top 1% users by volume
+# -------------------------------
+
+n_whales = max(1, int(len(user_stats) * 0.01))
+
+whale_volume = (
+    user_stats
+    .nlargest(n_whales, "Total_Volume")["Total_Volume"]
+    .sum()
+)
+
+whale_dominance = (
+    whale_volume / total_volume * 100
+    if total_volume > 0 else 0
+)
+
+# -------------------------------
+# Gini Coefficient
+# -------------------------------
+
+volumes = (
+    user_stats["Total_Volume"]
+    .fillna(0)
+    .values
+)
+
+volumes = volumes[volumes >= 0]
+
+volumes.sort()
+
+n = len(volumes)
+
+if n == 0 or volumes.sum() == 0:
+
+    gini = 0
+
+else:
+
+    index = range(1, n + 1)
+
+    gini = (
+        (
+            2 * sum(i * x for i, x in zip(index, volumes))
+        ) / (n * volumes.sum())
+    ) - (n + 1) / n
+
+# -------------------------------
+# Herfindahl Index (HHI)
+# -------------------------------
+
+shares = volumes / volumes.sum()
+
+hhi = (shares ** 2).sum()
+
+# ==========================================================
+# KPI Row 4
+# ==========================================================
+
+kpi12, kpi13, kpi14, kpi15 = st.columns(4)
+
+with kpi12:
+    st.metric(
+        "Top 100 Users Share",
+        f"{top100_share:.2f}%",
+        help="Percentage of the total transfer volume contributed by the top 100 users."
+    )
+
+with kpi13:
+    st.metric(
+        "Whale Dominance",
+        f"{whale_dominance:.2f}%",
+        help="Percentage of the total transfer volume contributed by the top 1% highest-volume users."
+    )
+
+with kpi14:
+    st.metric(
+        "Gini Coefficient",
+        f"{gini:.3f}",
+        help="Measures inequality in transfer volume distribution across users. Values closer to 1 indicate higher concentration."
+    )
+
+with kpi15:
+    st.metric(
+        "Herfindahl Index",
+        f"{hhi:.4f}",
+        help="Measures concentration of transfer volume among users. Higher values indicate greater concentration."
+    )
