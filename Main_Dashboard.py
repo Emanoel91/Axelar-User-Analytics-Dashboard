@@ -497,3 +497,56 @@ with kpi7:
             "who were active in the latest month."
         )
     )
+
+# ==========================================================
+# User-Level Statistics
+# ==========================================================
+
+user_stats = (
+    all_data
+    .groupby("key", as_index=False)
+    .agg(
+        Total_Transactions=("num_txs", "sum"),
+        Total_Volume=("volume", "sum"),
+    )
+)
+
+avg_transactions = user_stats["Total_Transactions"].mean()
+median_transactions = user_stats["Total_Transactions"].median()
+
+avg_volume = user_stats["Total_Volume"].mean()
+median_volume = user_stats["Total_Volume"].median()
+
+# ==========================================================
+# KPI Row 3
+# ==========================================================
+
+kpi8, kpi9, kpi10, kpi11 = st.columns(4)
+
+with kpi8:
+    st.metric(
+        label="Average Transactions/User",
+        value=f"{avg_transactions:,.2f}",
+        help="Average number of transactions performed by each unique user across the entire dataset."
+    )
+
+with kpi9:
+    st.metric(
+        label="Median Transactions/User",
+        value=f"{median_transactions:,.0f}",
+        help="Median number of transactions per unique user across the entire dataset."
+    )
+
+with kpi10:
+    st.metric(
+        label="Average Volume/User",
+        value=f"${avg_volume:,.2f}",
+        help="Average transfer volume per unique user across the entire dataset."
+    )
+
+with kpi11:
+    st.metric(
+        label="Median Volume/User",
+        value=f"${median_volume:,.2f}",
+        help="Median transfer volume per unique user across the entire dataset."
+    )
