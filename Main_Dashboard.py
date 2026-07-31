@@ -4,6 +4,10 @@ import plotly.express as px
 import requests
 from io import StringIO
 
+# ==========================================================
+# Page Config
+# ==========================================================
+
 st.set_page_config(
     page_title="Axelar User Analytics",
     layout="wide"
@@ -11,18 +15,18 @@ st.set_page_config(
 
 st.title("📊 Axelar User Analytics Dashboard")
 
-# -----------------------------
+# ==========================================================
 # GitHub Configuration
-# -----------------------------
+# ==========================================================
 
 OWNER = "Emanoel91"
 REPO = "Axelar-User-Analytics-Dashboard"
 BRANCH = "main"
 FOLDER = "User_Data_History"
 
-# -----------------------------
+# ==========================================================
 # Load Data
-# -----------------------------
+# ==========================================================
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -37,7 +41,7 @@ def load_data():
 
     files = response.json()
 
-    monthly_rows = []
+    all_rows = []
 
     gmp_users = set()
     tt_users = set()
@@ -69,9 +73,10 @@ def load_data():
 
         try:
 
-            csv_url = item["download_url"]
-
-            csv_response = requests.get(csv_url, timeout=60)
+            csv_response = requests.get(
+                item["download_url"],
+                timeout=60
+            )
 
             if csv_response.status_code != 200:
                 continue
@@ -87,46 +92,125 @@ def load_data():
         except Exception:
             continue
 
-        users = set(df["key"].dropna())
+        df = df.copy()
 
-        monthly_rows.append(
-            {
-                "Month": period,
-                "Service": service,
-                "Users": len(users),
-            }
-        )
+        df["Month"] = period
+        df["Service"] = service
+
+        all_rows.append(df)
+
+        users = set(df["key"].dropna())
 
         if service == "GMP":
             gmp_users.update(users)
         else:
             tt_users.update(users)
 
-    monthly_df = pd.DataFrame(monthly_rows)
+    # ------------------------------------------------------
 
-    monthly_df = monthly_df.sort_values("Month")
+    all_data = pd.concat(all_rows, ignore_index=True)
+
+    all_data["Month"] = pd.to_datetime(all_data["Month"])
+
+    # ------------------------------------------------------
+    # Monthly Active Users
+    # ------------------------------------------------------
+
+    monthly_df = (
+        all_data
+        .groupby(["Month", "Service"])["key"]
+        .nunique()
+        .reset_index(name="Users")
+        .sort_values("Month")
+    )
+
+    monthly_df["Month"] = monthly_df["Month"].dt.strftime("%Y-%m")
+
+    # ------------------------------------------------------
+    # Donut
+    # ------------------------------------------------------
 
     donut_df = pd.DataFrame(
         {
-            "Service": ["GMP", "Token Transfer"],
+            "Service": [
+                "GMP",
+                "Token Transfer"
+            ],
             "Users": [
                 len(gmp_users),
-                len(tt_users),
-            ],
+                len(tt_users)
+            ]
         }
     )
 
-    return monthly_df, donut_df
+    return all_data, monthly_df, donut_df
 
-# -----------------------------
+# ==========================================================
 # Load
-# -----------------------------
+# ==========================================================
 
-monthly_df, donut_df = load_data()
+all_data, monthly_df, donut_df = load_data()
 
-# -----------------------------
+# ==========================================================
+# KPI Calculation
+# ==========================================================
+
+latest_month = all_data["Month"].max()
+
+latest_df = all_data[
+    all_data["Month"] == latest_month
+]
+
+first_month = (
+    all_data
+    .groupby("key")["Month"]
+    .min()
+)
+
+total_unique_users = all_data["key"].nunique()
+
+new_users = (
+    first_month == latest_month
+).sum()
+
+returning_users = latest_df[
+    latest_df["key"].isin(
+        first_month[
+            first_month < latest_month
+        ].index
+    )
+]["key"].nunique()
+
+# ==========================================================
+# KPI Row
+# ==========================================================
+
+kpi1, kpi2, kpi3 = st.columns(3)
+
+with kpi1:
+    st.metric(
+        label="Total Unique Users",
+        value=f"{total_unique_users:,}"
+    )
+
+with kpi2:
+    st.metric(
+        label="New Users",
+        value=f"{new_users:,}"
+    )
+
+with kpi3:
+    st.metric(
+        label="Returning Users",
+        value=f"{returning_users:,}",
+        help="Users who were active in the latest month and had at least one activity before the latest month."
+    )
+
+st.markdown("---")
+
+# ==========================================================
 # Charts
-# -----------------------------
+# ==========================================================
 
 col1, col2 = st.columns([3,1])
 
@@ -140,20 +224,19 @@ with col1:
         barmode="stack",
         text="Users",
         color_discrete_map={
-            "GMP": "#ff7400",
-            "Token Transfer": "#00a1f7"
+            "GMP":"#ff7400",
+            "Token Transfer":"#00a1f7"
         }
     )
 
-    fig.update_traces(textposition="inside")
-
     fig.update_layout(
         title="Monthly Active Users",
-        xaxis_title="Month",
-        yaxis_title="Users",
-        legend_title="Service",
-        hovermode="x unified",
-        height=500
+        height=500,
+        hovermode="x unified"
+    )
+
+    fig.update_traces(
+        textposition="inside"
     )
 
     st.plotly_chart(
@@ -170,19 +253,18 @@ with col2:
         hole=0.65,
         color="Service",
         color_discrete_map={
-            "GMP": "#ff7400",
-            "Token Transfer": "#00a1f7"
+            "GMP":"#ff7400",
+            "Token Transfer":"#00a1f7"
         }
-    )
-
-    fig2.update_traces(
-        textposition="inside",
-        textinfo="percent+value"
     )
 
     fig2.update_layout(
         title="Unique Users",
         height=500
+    )
+
+    fig2.update_traces(
+        textinfo="percent+value"
     )
 
     st.plotly_chart(
