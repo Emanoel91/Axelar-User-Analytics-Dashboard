@@ -271,3 +271,127 @@ with col2:
         fig2,
         use_container_width=True
     )
+
+# ==========================================================
+# User Growth Data
+# ==========================================================
+
+# هر کاربر فقط یک بار در هر ماه شمرده شود
+monthly_users = (
+    all_data.groupby("Month")["key"]
+    .apply(set)
+    .sort_index()
+)
+
+months = list(monthly_users.index)
+
+growth_rows = []
+
+seen_users = set()
+
+for i, month in enumerate(months):
+
+    current_users = monthly_users[month]
+
+    # Active Users
+    active_users = len(current_users)
+
+    # New Users
+    new_users = len(current_users - seen_users)
+
+    # Returning Users
+    returning_users = len(current_users & seen_users)
+
+    # بروزرسانی کاربران دیده شده
+    seen_users.update(current_users)
+
+    # Cumulative Users
+    cumulative_users = len(seen_users)
+
+    growth_rows.append(
+        {
+            "Month": month,
+            "New Users": new_users,
+            "Returning Users": returning_users,
+            "Active Users": active_users,
+            "Cumulative Users": cumulative_users,
+        }
+    )
+
+growth_df = pd.DataFrame(growth_rows)
+
+growth_df["Month"] = growth_df["Month"].dt.strftime("%Y-%m")
+
+# ==========================================================
+# User Growth Charts
+# ==========================================================
+
+col1, col2 = st.columns(2)
+
+# ----------------------------------------------------------
+# Active / New / Returning Users
+# ----------------------------------------------------------
+
+with col1:
+
+    fig = px.bar(
+        growth_df,
+        x="Month",
+        y=["New Users", "Returning Users"],
+        barmode="stack",
+        color_discrete_map={
+            "New Users": "#00a1f7",
+            "Returning Users": "#ff7400",
+        },
+    )
+
+    fig.add_scatter(
+        x=growth_df["Month"],
+        y=growth_df["Active Users"],
+        mode="lines+markers",
+        name="Active Users",
+        line=dict(color="black", width=3),
+    )
+
+    fig.update_layout(
+        title="Monthly Active Users",
+        xaxis_title="Month",
+        yaxis_title="Users",
+        hovermode="x unified",
+        legend_title="",
+        height=500,
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+# ----------------------------------------------------------
+# Cumulative Users
+# ----------------------------------------------------------
+
+with col2:
+
+    fig2 = px.area(
+        growth_df,
+        x="Month",
+        y="Cumulative Users",
+    )
+
+    fig2.update_traces(
+        line=dict(width=3)
+    )
+
+    fig2.update_layout(
+        title="Cumulative Unique Users",
+        xaxis_title="Month",
+        yaxis_title="Users",
+        hovermode="x unified",
+        height=500,
+    )
+
+    st.plotly_chart(
+        fig2,
+        use_container_width=True,
+    )
