@@ -341,7 +341,7 @@ with col1:
         barmode="stack",
         color_discrete_map={
             "New Users": "#58fd86",
-            "Returning Users": "#fdc358",
+            "Returning Users": "#9f58fd",
         },
     )
 
@@ -350,7 +350,7 @@ with col1:
         y=growth_df["Active Users"],
         mode="lines",
         name="Active Users",
-        line=dict(color="black", width=3),
+        line=dict(color="black", width=2),
     )
 
     fig.update_layout(
