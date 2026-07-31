@@ -189,3 +189,41 @@ with col2:
         fig2,
         use_container_width=True
     )
+
+# ==========================================
+# KPI Calculation
+# ==========================================
+latest_month = all_data["Month"].max()
+latest_df = all_data[all_data["Month"] == latest_month]
+total_unique_users = all_data["key"].nunique()
+first_month = all_data.groupby("key")["Month"].min()
+new_users = (first_month == latest_month).sum()
+returning_users = latest_df[
+    latest_df["key"].isin(
+        first_month[first_month < latest_month].index
+    )
+]["key"].nunique()
+
+# ==========================================
+# KPI Row
+# ==========================================
+
+kpi1, kpi2, kpi3 = st.columns(3)
+
+with kpi1:
+    st.metric(
+        "Total Unique Users",
+        f"{total_unique_users:,}"
+    )
+
+with kpi2:
+    st.metric(
+        "New Users",
+        f"{new_users:,}"
+    )
+
+with kpi3:
+    st.metric(
+        "Returning Users",
+        f"{returning_users:,}"
+    )
