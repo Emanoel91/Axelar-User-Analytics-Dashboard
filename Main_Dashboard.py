@@ -936,3 +936,121 @@ with col2:
         fig2,
         width="stretch",
     )
+
+# ==========================================================
+# Monthly User Statistics
+# ==========================================================
+
+# هر کاربر در هر ماه فقط یک بار در نظر گرفته شود
+monthly_user_stats = (
+    all_data
+    .groupby(["Month", "key"], as_index=False)
+    .agg(
+        Volume=("volume", "sum"),
+        Transactions=("num_txs", "sum"),
+    )
+)
+
+monthly_metrics = (
+    monthly_user_stats
+    .groupby("Month", as_index=False)
+    .agg(
+        Avg_Volume=("Volume", "mean"),
+        Median_Volume=("Volume", "median"),
+        Avg_Tx=("Transactions", "mean"),
+        Median_Tx=("Transactions", "median"),
+    )
+)
+
+monthly_metrics["Month"] = (
+    pd.to_datetime(monthly_metrics["Month"])
+    .dt.strftime("%Y-%m")
+)
+
+# ==========================================================
+# Monthly User Statistics Charts
+# ==========================================================
+
+col1, col2 = st.columns(2)
+
+# ----------------------------------------------------------
+# Monthly Average & Median Volume per User
+# ----------------------------------------------------------
+
+with col1:
+
+    fig = px.line(
+        monthly_metrics,
+        x="Month",
+        y=["Avg_Volume", "Median_Volume"],
+        markers=True,
+    )
+
+    fig.update_traces(
+        line=dict(width=3)
+    )
+
+    fig.update_layout(
+        title="Monthly Average & Median Volume per User",
+        xaxis_title="Month",
+        yaxis_title="Volume",
+        hovermode="x unified",
+        legend_title="",
+        height=500,
+    )
+
+    fig.for_each_trace(
+        lambda t: t.update(
+            name=(
+                "Average"
+                if t.name == "Avg_Volume"
+                else "Median"
+            )
+        )
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch",
+    )
+
+# ----------------------------------------------------------
+# Monthly Average & Median Transactions per User
+# ----------------------------------------------------------
+
+with col2:
+
+    fig2 = px.line(
+        monthly_metrics,
+        x="Month",
+        y=["Avg_Tx", "Median_Tx"],
+        markers=True,
+    )
+
+    fig2.update_traces(
+        line=dict(width=3)
+    )
+
+    fig2.update_layout(
+        title="Monthly Average & Median Transactions per User",
+        xaxis_title="Month",
+        yaxis_title="Transactions",
+        hovermode="x unified",
+        legend_title="",
+        height=500,
+    )
+
+    fig2.for_each_trace(
+        lambda t: t.update(
+            name=(
+                "Average"
+                if t.name == "Avg_Tx"
+                else "Median"
+            )
+        )
+    )
+
+    st.plotly_chart(
+        fig2,
+        width="stretch",
+    )
