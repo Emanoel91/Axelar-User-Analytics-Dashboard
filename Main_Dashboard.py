@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 import requests
 from io import StringIO
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 # ==========================================================
 # Page Config
@@ -979,34 +981,69 @@ col1, col2 = st.columns(2)
 
 with col1:
 
-    fig = px.line(
-        monthly_metrics,
-        x="Month",
-        y=["Avg_Volume", "Median_Volume"],
-        markers=True,
+    fig = make_subplots(
+        specs=[[{"secondary_y": True}]]
     )
 
-    fig.update_traces(
-        line=dict(width=3)
+    # Average Volume
+    fig.add_trace(
+        go.Scatter(
+            x=monthly_metrics["Month"],
+            y=monthly_metrics["Avg_Volume"],
+            mode="lines+markers",
+            name="Average",
+            line=dict(
+                color="#00a1f7",
+                width=3,
+            ),
+        ),
+        secondary_y=False,
+    )
+
+    # Median Volume
+    fig.add_trace(
+        go.Scatter(
+            x=monthly_metrics["Month"],
+            y=monthly_metrics["Median_Volume"],
+            mode="lines+markers",
+            name="Median",
+            line=dict(
+                color="#ff7400",
+                width=3,
+            ),
+        ),
+        secondary_y=True,
     )
 
     fig.update_layout(
+
         title="Monthly Average & Median Volume per User",
-        xaxis_title="Month",
-        yaxis_title="Volume",
+
         hovermode="x unified",
-        legend_title="",
+
         height=500,
+
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+        ),
     )
 
-    fig.for_each_trace(
-        lambda t: t.update(
-            name=(
-                "Average"
-                if t.name == "Avg_Volume"
-                else "Median"
-            )
-        )
+    fig.update_xaxes(
+        title_text="Month"
+    )
+
+    fig.update_yaxes(
+        title_text="Average Volume",
+        secondary_y=False,
+    )
+
+    fig.update_yaxes(
+        title_text="Median Volume",
+        secondary_y=True,
     )
 
     st.plotly_chart(
@@ -1020,34 +1057,69 @@ with col1:
 
 with col2:
 
-    fig2 = px.line(
-        monthly_metrics,
-        x="Month",
-        y=["Avg_Tx", "Median_Tx"],
-        markers=True,
+    fig2 = make_subplots(
+        specs=[[{"secondary_y": True}]]
     )
 
-    fig2.update_traces(
-        line=dict(width=3)
+    # Average Tx
+    fig2.add_trace(
+        go.Scatter(
+            x=monthly_metrics["Month"],
+            y=monthly_metrics["Avg_Tx"],
+            mode="lines+markers",
+            name="Average",
+            line=dict(
+                color="#00a1f7",
+                width=3,
+            ),
+        ),
+        secondary_y=False,
+    )
+
+    # Median Tx
+    fig2.add_trace(
+        go.Scatter(
+            x=monthly_metrics["Month"],
+            y=monthly_metrics["Median_Tx"],
+            mode="lines+markers",
+            name="Median",
+            line=dict(
+                color="#ff7400",
+                width=3,
+            ),
+        ),
+        secondary_y=True,
     )
 
     fig2.update_layout(
+
         title="Monthly Average & Median Transactions per User",
-        xaxis_title="Month",
-        yaxis_title="Transactions",
+
         hovermode="x unified",
-        legend_title="",
+
         height=500,
+
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+        ),
     )
 
-    fig2.for_each_trace(
-        lambda t: t.update(
-            name=(
-                "Average"
-                if t.name == "Avg_Tx"
-                else "Median"
-            )
-        )
+    fig2.update_xaxes(
+        title_text="Month"
+    )
+
+    fig2.update_yaxes(
+        title_text="Average Transactions",
+        secondary_y=False,
+    )
+
+    fig2.update_yaxes(
+        title_text="Median Transactions",
+        secondary_y=True,
     )
 
     st.plotly_chart(
