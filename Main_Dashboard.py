@@ -740,35 +740,132 @@ growth_metrics_df["Month"] = (
 
 col1, col2 = st.columns(2)
 
+# ==========================================================
+# User Growth Metrics
+# ==========================================================
+
+monthly_users = (
+    all_data.groupby("Month")["key"]
+    .apply(set)
+    .sort_index()
+)
+
+months = list(monthly_users.index)
+
+growth_rows = []
+
+seen_users = set()
+
+for i, month in enumerate(months):
+
+    current_users = monthly_users[month]
+
+    # Active Users
+    active_users = len(current_users)
+
+    # New Users
+    new_users = len(current_users - seen_users)
+
+    # Returning Users
+    returning_users = len(current_users & seen_users)
+
+    # Churned Users
+    if i == 0:
+        churned_users = 0
+    else:
+        previous_users = monthly_users[months[i - 1]]
+        churned_users = len(previous_users - current_users)
+
+    # Net User Growth
+    net_growth = new_users - churned_users
+
+    # User Growth Rate
+    if i == 0:
+        growth_rate = None
+    else:
+        previous_active = len(monthly_users[months[i - 1]])
+
+        growth_rate = (
+            (active_users - previous_active)
+            / previous_active
+            * 100
+            if previous_active > 0 else None
+        )
+
+    seen_users.update(current_users)
+
+    growth_rows.append(
+        {
+            "Month": month,
+            "Active Users": active_users,
+            "New Users": new_users,
+            "Returning Users": returning_users,
+            "Churned Users": churned_users,
+            "Net User Growth": net_growth,
+            "User Growth Rate": growth_rate,
+        }
+    )
+
+growth_metrics_df = pd.DataFrame(growth_rows)
+
+growth_metrics_df["Month"] = pd.to_datetime(
+    growth_metrics_df["Month"]
+)
+
+# فقط از فوریه 2022 به بعد
+growth_rate_df = growth_metrics_df[
+    growth_metrics_df["Month"] >= "2022-02-01"
+].copy()
+
+growth_rate_df["Month"] = (
+    growth_rate_df["Month"]
+    .dt.strftime("%Y-%m")
+)
+
+growth_metrics_df["Month"] = (
+    growth_metrics_df["Month"]
+    .dt.strftime("%Y-%m")
+)
+
+# ==========================================================
+# Growth Charts
+# ==========================================================
+
+col1, col2 = st.columns(2)
+
 # ----------------------------------------------------------
-# User Growth Rate
+# Monthly User Growth Rate
 # ----------------------------------------------------------
 
 with col1:
 
-    growth_metrics_df["Growth Color"] = growth_metrics_df[
+    growth_rate_df["Color"] = growth_rate_df[
         "User Growth Rate"
     ].apply(
         lambda x: "#16a34a" if x >= 0 else "#dc2626"
     )
 
     fig = px.bar(
-        growth_metrics_df,
+        growth_rate_df,
         x="Month",
         y="User Growth Rate",
         text="User Growth Rate",
     )
 
     fig.update_traces(
-        marker_color=growth_metrics_df["Growth Color"],
+        marker_color=growth_rate_df["Color"],
         texttemplate="%{y:.1f}%",
         textposition="outside",
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Growth Rate: %{y:.2f}%<extra></extra>"
+        ),
     )
 
     fig.add_hline(
         y=0,
         line_dash="dash",
-        line_color="gray"
+        line_color="gray",
     )
 
     fig.update_layout(
@@ -791,7 +888,7 @@ with col1:
 
 with col2:
 
-    growth_metrics_df["Net Color"] = growth_metrics_df[
+    growth_metrics_df["Color"] = growth_metrics_df[
         "Net User Growth"
     ].apply(
         lambda x: "#16a34a" if x >= 0 else "#dc2626"
@@ -805,14 +902,18 @@ with col2:
     )
 
     fig2.update_traces(
-        marker_color=growth_metrics_df["Net Color"],
+        marker_color=growth_metrics_df["Color"],
         textposition="outside",
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Net Growth: %{y:,}<extra></extra>"
+        ),
     )
 
     fig2.add_hline(
         y=0,
         line_dash="dash",
-        line_color="gray"
+        line_color="gray",
     )
 
     fig2.update_layout(
