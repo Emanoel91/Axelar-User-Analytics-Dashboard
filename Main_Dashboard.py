@@ -1126,3 +1126,178 @@ with col2:
         fig2,
         width="stretch",
     )
+
+# ==========================================================
+# Reactivated Users / Churn / Resurrection Rate
+# ==========================================================
+
+monthly_users = (
+    all_data.groupby("Month")["key"]
+    .apply(set)
+    .sort_index()
+)
+
+months = list(monthly_users.index)
+
+history = set()
+
+lifecycle_rows = []
+
+for i, month in enumerate(months):
+
+    current = monthly_users[month]
+
+    # Previous month
+    previous = monthly_users[months[i-1]] if i > 0 else set()
+
+    # Users active before previous month
+    active_before_previous = history - previous
+
+    # Reactivated
+    reactivated = current & active_before_previous
+
+    # Churned
+    churned = previous - current if i > 0 else set()
+
+    # Resurrection Rate
+    inactive_last_month = history - previous
+
+    resurrection_rate = (
+        len(reactivated) / len(inactive_last_month) * 100
+        if len(inactive_last_month) > 0
+        else 0
+    )
+
+    lifecycle_rows.append(
+        {
+            "Month": month,
+            "Reactivated Users": len(reactivated),
+            "Churned Users": len(churned),
+            "Resurrection Rate": resurrection_rate,
+        }
+    )
+
+    history.update(current)
+
+lifecycle_df = pd.DataFrame(lifecycle_rows)
+
+lifecycle_df["Month"] = (
+    pd.to_datetime(lifecycle_df["Month"])
+    .dt.strftime("%Y-%m")
+)
+
+# ==========================================================
+# User Lifecycle Charts
+# ==========================================================
+
+col1, col2, col3 = st.columns(3)
+
+# ----------------------------------------------------------
+# Monthly Reactivated Users
+# ----------------------------------------------------------
+
+with col1:
+
+    fig = px.bar(
+        lifecycle_df,
+        x="Month",
+        y="Reactivated Users",
+        text="Reactivated Users",
+    )
+
+    fig.update_traces(
+        marker_color="#16a34a",
+        textposition="outside",
+    )
+
+    fig.update_layout(
+        title=(
+            "Monthly Reactivated Users"
+            "<br><sup>"
+            "Users who became active again after being inactive "
+            "during the previous month."
+            "</sup>"
+        ),
+        xaxis_title="Month",
+        yaxis_title="Users",
+        hovermode="x unified",
+        height=500,
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch",
+    )
+
+# ----------------------------------------------------------
+# Monthly Churned Users
+# ----------------------------------------------------------
+
+with col2:
+
+    fig2 = px.bar(
+        lifecycle_df,
+        x="Month",
+        y="Churned Users",
+        text="Churned Users",
+    )
+
+    fig2.update_traces(
+        marker_color="#dc2626",
+        textposition="outside",
+    )
+
+    fig2.update_layout(
+        title=(
+            "Monthly Churned Users"
+            "<br><sup>"
+            "Users who were active in the previous month "
+            "but not in the current month."
+            "</sup>"
+        ),
+        xaxis_title="Month",
+        yaxis_title="Users",
+        hovermode="x unified",
+        height=500,
+    )
+
+    st.plotly_chart(
+        fig2,
+        width="stretch",
+    )
+
+# ----------------------------------------------------------
+# Resurrection Rate
+# ----------------------------------------------------------
+
+with col3:
+
+    fig3 = px.line(
+        lifecycle_df,
+        x="Month",
+        y="Resurrection Rate",
+        markers=True,
+    )
+
+    fig3.update_traces(
+        line=dict(width=3, color="#00a1f7"),
+    )
+
+    fig3.update_layout(
+        title=(
+            "Monthly Resurrection Rate"
+            "<br><sup>"
+            "Percentage of previously inactive users "
+            "who became active again during the month."
+            "</sup>"
+        ),
+        xaxis_title="Month",
+        yaxis_title="Rate (%)",
+        hovermode="x unified",
+        height=500,
+    )
+
+    st.plotly_chart(
+        fig3,
+        width="stretch",
+    )
