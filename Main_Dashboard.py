@@ -1362,10 +1362,115 @@ lifecycle_df["Month"] = (
 )
 
 # ==========================================================
+# User Lifecycle Metrics
+# ==========================================================
+
+monthly_users = (
+    all_data
+    .groupby("Month")["key"]
+    .apply(set)
+    .sort_index()
+)
+
+months = list(monthly_users.index)
+
+lifecycle_rows = []
+
+for i, month in enumerate(months):
+
+    current_users = monthly_users[month]
+
+    # اولین ماه دیتاست
+    if i == 0:
+
+        lifecycle_rows.append(
+            {
+                "Month": month,
+                "Reactivated Users": 0,
+                "Churned Users": 0,
+                "Resurrection Rate": 0,
+            }
+        )
+
+        continue
+
+
+    previous_users = monthly_users[months[i-1]]
+
+    # تمام کاربران قبل از ماه قبل
+    historical_users = set()
+
+    for previous_month in months[:i-1]:
+        historical_users.update(
+            monthly_users[previous_month]
+        )
+
+
+    # -------------------------------
+    # Reactivated Users
+    # -------------------------------
+
+    reactivated_users = (
+        current_users
+        - previous_users
+    ) & historical_users
+
+
+    # -------------------------------
+    # Churned Users
+    # -------------------------------
+
+    churned_users = (
+        previous_users
+        - current_users
+    )
+
+
+    # -------------------------------
+    # Resurrection Rate
+    # -------------------------------
+
+    inactive_users = (
+        historical_users
+        - previous_users
+    )
+
+    resurrection_rate = (
+        len(reactivated_users)
+        /
+        len(inactive_users)
+        * 100
+        if len(inactive_users) > 0
+        else 0
+    )
+
+
+    lifecycle_rows.append(
+        {
+            "Month": month,
+            "Reactivated Users": len(reactivated_users),
+            "Churned Users": len(churned_users),
+            "Resurrection Rate": resurrection_rate,
+        }
+    )
+
+
+lifecycle_df = pd.DataFrame(lifecycle_rows)
+
+
+lifecycle_df["Month"] = (
+    pd.to_datetime(
+        lifecycle_df["Month"]
+    )
+    .dt.strftime("%Y-%m")
+)
+
+# ==========================================================
 # User Lifecycle Charts
 # ==========================================================
 
 col1, col2, col3 = st.columns(3)
+
 
 # ----------------------------------------------------------
 # Monthly Reactivated Users
@@ -1373,36 +1478,46 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
 
-    fig = px.bar(
+    fig_reactivated = px.bar(
         lifecycle_df,
         x="Month",
         y="Reactivated Users",
         text="Reactivated Users",
     )
 
-    fig.update_traces(
+
+    fig_reactivated.update_traces(
         marker_color="#16a34a",
         textposition="outside",
+        hovertemplate=
+        "<b>%{x}</b><br>"
+        "Reactivated Users: %{y:,}"
+        "<extra></extra>"
     )
 
-    fig.update_layout(
+
+    fig_reactivated.update_layout(
         title=(
             "Monthly Reactivated Users"
             "<br><sup>"
-            "Users who became active again after being inactive "
-            "during the previous month."
+            "Users who returned after being inactive "
+            "for at least one previous month."
             "</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Users",
-        hovermode="x unified",
         height=500,
+        showlegend=False,
     )
 
+
     st.plotly_chart(
-        fig,
+        fig_reactivated,
         width="stretch",
+        key="chart_monthly_reactivated_users"
     )
+
+
 
 # ----------------------------------------------------------
 # Monthly Churned Users
@@ -1410,69 +1525,91 @@ with col1:
 
 with col2:
 
-    fig2 = px.bar(
+    fig_churn = px.bar(
         lifecycle_df,
         x="Month",
         y="Churned Users",
         text="Churned Users",
     )
 
-    fig2.update_traces(
+
+    fig_churn.update_traces(
         marker_color="#dc2626",
         textposition="outside",
+        hovertemplate=
+        "<b>%{x}</b><br>"
+        "Churned Users: %{y:,}"
+        "<extra></extra>"
     )
 
-    fig2.update_layout(
+
+    fig_churn.update_layout(
         title=(
             "Monthly Churned Users"
             "<br><sup>"
             "Users who were active in the previous month "
-            "but not in the current month."
+            "but inactive in the current month."
             "</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Users",
-        hovermode="x unified",
         height=500,
+        showlegend=False,
     )
+
 
     st.plotly_chart(
-        fig2,
+        fig_churn,
         width="stretch",
+        key="chart_monthly_churned_users"
     )
 
+
+
 # ----------------------------------------------------------
-# Resurrection Rate
+# Monthly Resurrection Rate
 # ----------------------------------------------------------
 
 with col3:
 
-    fig3 = px.line(
+    fig_resurrection = px.line(
         lifecycle_df,
         x="Month",
         y="Resurrection Rate",
         markers=True,
     )
 
-    fig3.update_traces(
-        line=dict(width=3, color="#00a1f7"),
+
+    fig_resurrection.update_traces(
+        line=dict(
+            color="#00a1f7",
+            width=3
+        ),
+        hovertemplate=
+        "<b>%{x}</b><br>"
+        "Resurrection Rate: %{y:.2f}%"
+        "<extra></extra>"
     )
 
-    fig3.update_layout(
+
+    fig_resurrection.update_layout(
         title=(
             "Monthly Resurrection Rate"
             "<br><sup>"
-            "Percentage of previously inactive users "
-            "who became active again during the month."
+            "Percentage of inactive users who returned "
+            "and became active again during the month."
             "</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Rate (%)",
-        hovermode="x unified",
         height=500,
+        showlegend=False,
     )
 
+
     st.plotly_chart(
-        fig3,
+        fig_resurrection,
         width="stretch",
+        key="chart_monthly_resurrection_rate"
     )
+    
