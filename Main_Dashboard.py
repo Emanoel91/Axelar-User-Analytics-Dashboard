@@ -20,6 +20,49 @@ st.set_page_config(
 st.title("📊 Axelar User Analytics Dashboard")
 
 # ==========================================================
+# Plot-size guard
+# ==========================================================
+# Lorenz / Pareto charts are naturally one-point-per-user. With large user
+# counts this can blow past Streamlit's websocket message-size limit
+# (MessageSizeError). We cap the number of points actually sent to the
+# browser by bucketing, while keeping exact math (Gini, cumulative %, etc.)
+# computed on the full, un-bucketed data.
+MAX_PLOT_POINTS = 2000
+
+
+def downsample_curve(x: np.ndarray, y: np.ndarray, max_points: int = MAX_PLOT_POINTS):
+    """Evenly subsample a monotonic curve for plotting only (keeps shape)."""
+    n = len(x)
+    if n <= max_points:
+        return x, y
+    idx = np.unique(np.linspace(0, n - 1, max_points).astype(int))
+    return x[idx], y[idx]
+
+
+def bucket_pareto(df: pd.DataFrame, value_col: str, max_points: int = MAX_PLOT_POINTS) -> pd.DataFrame:
+    """Group a rank-sorted per-user Pareto table into <= max_points buckets.
+
+    Bar height per bucket = sum of value_col within the bucket.
+    CumPct per bucket = cumulative % at the bucket's last (highest) rank,
+    taken from the already-computed exact cumulative column.
+    """
+    n = len(df)
+    if n <= max_points:
+        return df
+
+    bin_size = int(np.ceil(n / max_points))
+    bucketed = df.copy()
+    bucketed["_bin"] = np.arange(n) // bin_size
+
+    out = bucketed.groupby("_bin", as_index=False).agg(
+        Rank=("Rank", "max"),
+        **{value_col: (value_col, "sum")},
+        CumPct=("CumPct", "last"),
+    )
+    return out
+
+
+# ==========================================================
 # GitHub Configuration
 # ==========================================================
 
@@ -736,13 +779,17 @@ else:
     lorenz_x = np.insert(cum_users, 0, 0)
     lorenz_y = np.insert(cum_values, 0, 0)
 
+    # Gini is computed on the FULL, exact data — only the plotted curve is
+    # downsampled, so the metric stays accurate even for huge user counts.
     lorenz_gini = gini_coefficient(lorenz_values)
 
-    gap = lorenz_x - lorenz_y
+    plot_x, plot_y = downsample_curve(lorenz_x, lorenz_y)
+
+    gap = plot_x - plot_y
     hover_text = [
         f"<b>Users:</b> {x * 100:.2f}%<br><b>Activity:</b> {y * 100:.2f}%"
         f"<br><b>Inequality Gap:</b> {g * 100:.2f}%"
-        for x, y, g in zip(lorenz_x, lorenz_y, gap)
+        for x, y, g in zip(plot_x, plot_y, gap)
     ]
 
     if lorenz_gini < 0.30:
@@ -769,8 +816,8 @@ else:
 
     lorenz_fig.add_trace(
         go.Scatter(
-            x=np.concatenate([lorenz_x, lorenz_x[::-1]]),
-            y=np.concatenate([lorenz_x, lorenz_y[::-1]]),
+            x=np.concatenate([plot_x, plot_x[::-1]]),
+            y=np.concatenate([plot_x, plot_y[::-1]]),
             fill="toself",
             fillcolor=lorenz_fill,
             line=dict(color="rgba(0,0,0,0)"),
@@ -781,8 +828,8 @@ else:
 
     lorenz_fig.add_trace(
         go.Scatter(
-            x=lorenz_x,
-            y=lorenz_y,
+            x=plot_x,
+            y=plot_y,
             mode="lines",
             line=dict(color=lorenz_color, width=4),
             customdata=hover_text,
@@ -830,6 +877,12 @@ else:
     )
 
     st.plotly_chart(lorenz_fig, use_container_width=True, key="user_lorenz_curve")
+    if len(plot_x) < len(lorenz_x):
+        st.caption(
+            f"Curve rendered from {len(plot_x):,} sampled points out of {len(lorenz_x):,} "
+            "users to keep the chart lightweight. The Gini coefficient above is computed "
+            "on the full, unsampled data."
+        )
 
 # ==========================================================
 # User Activity Pareto Analysis
@@ -867,24 +920,34 @@ pareto_df["CumPct"] = (
     pareto_df[value_col].cumsum() / total_activity * 100 if total_activity > 0 else 0
 )
 
+# Reference levels (50/80/95%) below are computed on the exact, full
+# pareto_df. The traces themselves are bucketed to keep the payload sent
+# to the browser small when there are many thousands of users.
+pareto_plot_df = bucket_pareto(pareto_df, value_col)
+bucketed = len(pareto_plot_df) < total_users
+
 pareto_fig = go.Figure()
+
+bar_hover = (
+    "<b>Users up to Rank %{x:,}</b><br>" + hover_value_label + " (bucket sum): " + value_format + "<extra></extra>"
+    if bucketed
+    else "<b>User Rank %{x}</b><br>" + hover_value_label + ": " + value_format + "<extra></extra>"
+)
 
 pareto_fig.add_trace(
     go.Bar(
-        x=pareto_df["Rank"],
-        y=pareto_df[value_col],
+        x=pareto_plot_df["Rank"],
+        y=pareto_plot_df[value_col],
         marker=dict(color=color_bar),
         name=value_title,
-        hovertemplate=(
-            "<b>User Rank %{x}</b><br>" + hover_value_label + ": " + value_format + "<extra></extra>"
-        ),
+        hovertemplate=bar_hover,
     )
 )
 
 pareto_fig.add_trace(
     go.Scatter(
-        x=pareto_df["Rank"],
-        y=pareto_df["CumPct"],
+        x=pareto_plot_df["Rank"],
+        y=pareto_plot_df["CumPct"],
         mode="lines",
         line=dict(color=color_line, width=4),
         yaxis="y2",
@@ -940,3 +1003,9 @@ pareto_fig.update_layout(
 )
 
 st.plotly_chart(pareto_fig, use_container_width=True, key="user_activity_pareto_chart")
+if bucketed:
+    st.caption(
+        f"Bars grouped into {len(pareto_plot_df):,} rank buckets out of {total_users:,} users "
+        "to keep the chart lightweight. The 50/80/95% reference markers above are computed "
+        "on the full, unbucketed data."
+    )
