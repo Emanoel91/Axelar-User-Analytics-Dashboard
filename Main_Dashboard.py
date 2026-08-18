@@ -748,7 +748,7 @@ st.caption(
     "the more concentrated the network activity becomes."
 )
 
-lorenz_metric = st.selectbox("Metric", ["Volume", "Transactions"], key="lorenz_metric_global")
+lorenz_metric = st.selectbox("Metric", ["Transactions", "Volume"], key="lorenz_metric_global")
 
 if lorenz_metric == "Volume":
     lorenz_values = user_stats["Total_Volume"].clip(lower=0)
@@ -895,7 +895,7 @@ st.caption(
     "line shows the percentage of total activity contributed by the top-ranked users."
 )
 
-pareto_metric = st.selectbox("Metric", ["Volume", "Transactions"], key="pareto_metric_global")
+pareto_metric = st.selectbox("Metric", ["Transactions", "Volume"], key="pareto_metric_global")
 
 if pareto_metric == "Volume":
     value_col = "Total_Volume"
