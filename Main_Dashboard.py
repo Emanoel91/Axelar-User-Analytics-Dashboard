@@ -1465,3 +1465,366 @@ lifecycle_df["Month"] = (
     .dt.strftime("%Y-%m")
 )
 
+# ==========================================================
+# PROFESSIONAL USER PARETO ANALYSIS
+# ==========================================================
+
+st.subheader("📊 User Activity Pareto Analysis")
+
+st.caption(
+    "Shows how Axelar's total user activity is distributed across wallets. "
+    "Users are ranked from highest to lowest activity, while the cumulative "
+    "line shows the percentage of total activity contributed by the top-ranked users."
+)
+
+# ==========================================================
+# AGGREGATE USER DATA
+# ==========================================================
+
+pareto_user_df = (
+    all_data
+    .groupby("key", as_index=False)
+    .agg(
+        volume=("volume", "sum"),
+        num_txs=("num_txs", "sum")
+    )
+)
+
+# Remove invalid values
+pareto_user_df["volume"] = pd.to_numeric(
+    pareto_user_df["volume"],
+    errors="coerce"
+).fillna(0)
+
+pareto_user_df["num_txs"] = pd.to_numeric(
+    pareto_user_df["num_txs"],
+    errors="coerce"
+).fillna(0)
+
+
+# ==========================================================
+# METRIC SELECTOR
+# ==========================================================
+
+metric = st.selectbox(
+    "Metric",
+    ["Volume", "Transactions"],
+    key="pareto_metric_global"
+)
+
+
+# ==========================================================
+# METRIC CONFIGURATION
+# ==========================================================
+
+if metric == "Volume":
+
+    value_col = "volume"
+
+    color_bar = "#c58ce2"
+
+    color_line = "#e1fb43"
+
+    value_title = "Volume ($)"
+
+    value_format = "$%{y:,.2f}"
+
+    hover_value_label = "Volume"
+
+else:
+
+    value_col = "num_txs"
+
+    color_bar = "#e1fb43"
+
+    color_line = "#c58ce2"
+
+    value_title = "Transactions"
+
+    value_format = "%{y:,}"
+
+    hover_value_label = "Transactions"
+
+
+# ==========================================================
+# SORT USERS BY ACTIVITY
+# ==========================================================
+
+pareto_df = (
+    pareto_user_df
+    .sort_values(
+        value_col,
+        ascending=False
+    )
+    .reset_index(drop=True)
+)
+
+pareto_df["Rank"] = (
+    pareto_df.index + 1
+)
+
+
+# ==========================================================
+# TOTAL ACTIVITY
+# ==========================================================
+
+total_activity = pareto_df[value_col].sum()
+
+total_users = len(pareto_df)
+
+
+# ==========================================================
+# CUMULATIVE ACTIVITY SHARE
+# ==========================================================
+
+if total_activity > 0:
+
+    pareto_df["CumPct"] = (
+        pareto_df[value_col].cumsum()
+        / total_activity
+        * 100
+    )
+
+else:
+
+    pareto_df["CumPct"] = 0
+
+
+# ==========================================================
+# CREATE FIGURE
+# ==========================================================
+
+fig = go.Figure()
+
+
+# ==========================================================
+# ACTIVITY BARS
+# ==========================================================
+
+fig.add_trace(
+
+    go.Bar(
+
+        x=pareto_df["Rank"],
+
+        y=pareto_df[value_col],
+
+        marker=dict(
+            color=color_bar
+        ),
+
+        name=value_title,
+
+        hovertemplate=
+            "<b>User Rank %{x}</b><br>"
+            + hover_value_label
+            + ": "
+            + value_format
+            + "<extra></extra>"
+    )
+)
+
+
+# ==========================================================
+# CUMULATIVE LINE
+# ==========================================================
+
+fig.add_trace(
+
+    go.Scatter(
+
+        x=pareto_df["Rank"],
+
+        y=pareto_df["CumPct"],
+
+        mode="lines",
+
+        line=dict(
+            color=color_line,
+            width=4
+        ),
+
+        yaxis="y2",
+
+        name="Cumulative Share",
+
+        hovertemplate=
+            "<b>User Rank %{x}</b><br>"
+            "Cumulative Share: %{y:.2f}%"
+            "<extra></extra>"
+    )
+)
+
+
+# ==========================================================
+# PARETO REFERENCE LEVELS
+# ==========================================================
+
+levels = [50, 80, 95]
+
+level_colors = {
+    50: "#4CAF50",
+    80: "#FF9800",
+    95: "#F44336"
+}
+
+
+for level in levels:
+
+    if total_users == 0 or total_activity <= 0:
+        continue
+
+    matching_rows = pareto_df.index[
+        pareto_df["CumPct"] >= level
+    ]
+
+    if len(matching_rows) == 0:
+        continue
+
+    idx = matching_rows[0]
+
+    rank = int(
+        pareto_df.loc[idx, "Rank"]
+    )
+
+    pct_users = (
+        rank
+        / total_users
+        * 100
+    )
+
+
+    # Horizontal reference line
+    fig.add_hline(
+
+        y=level,
+
+        line_dash="dot",
+
+        line_color=level_colors[level],
+
+        yref="y2"
+    )
+
+
+    # Vertical reference line
+    fig.add_vline(
+
+        x=rank,
+
+        line_dash="dot",
+
+        line_color=level_colors[level]
+    )
+
+
+    # Annotation
+    fig.add_annotation(
+
+        x=rank,
+
+        y=level,
+
+        yref="y2",
+
+        showarrow=True,
+
+        arrowhead=2,
+
+        bgcolor="white",
+
+        bordercolor=level_colors[level],
+
+        borderwidth=1,
+
+        text=(
+            f"<b>{level}% of Activity</b><br>"
+            f"Top {pct_users:.2f}% Users"
+        )
+    )
+
+
+# ==========================================================
+# LAYOUT
+# ==========================================================
+
+fig.update_layout(
+
+    template="plotly_white",
+
+    height=620,
+
+    hovermode="x unified",
+
+    margin=dict(
+        l=20,
+        r=20,
+        t=80,
+        b=20
+    ),
+
+    title=(
+        f"Pareto Analysis — {metric}"
+        "<br>"
+        "<sup>"
+        "Users ranked from highest to lowest activity with cumulative "
+        "activity contribution shown on the secondary axis."
+        "</sup>"
+    ),
+
+    xaxis=dict(
+
+        title="Users Ranked by Activity",
+
+        showgrid=False,
+
+        zeroline=False
+    ),
+
+    yaxis=dict(
+
+        title=value_title,
+
+        gridcolor="rgba(0,0,0,0.08)"
+    ),
+
+    yaxis2=dict(
+
+        title="Cumulative Share (%)",
+
+        overlaying="y",
+
+        side="right",
+
+        range=[0, 100],
+
+        showgrid=False,
+
+        ticksuffix="%"
+    ),
+
+    legend=dict(
+
+        orientation="h",
+
+        yanchor="bottom",
+
+        y=1.02,
+
+        xanchor="left",
+
+        x=0
+    )
+)
+
+
+# ==========================================================
+# DISPLAY
+# ==========================================================
+
+st.plotly_chart(
+    fig,
+    width="stretch",
+    key="user_activity_pareto_chart"
+)
+
