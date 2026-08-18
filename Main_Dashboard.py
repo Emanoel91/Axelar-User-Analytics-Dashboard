@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import numpy as np
 import requests
 from io import StringIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-import numpy as np
+import plotly.express as px
 
 # ==========================================================
 # Page Config
@@ -13,7 +14,7 @@ import numpy as np
 
 st.set_page_config(
     page_title="Axelar User Analytics",
-    layout="wide"
+    layout="wide",
 )
 
 st.title("📊 Axelar User Analytics Dashboard")
@@ -27,198 +28,282 @@ REPO = "Axelar-User-Analytics-Dashboard"
 BRANCH = "main"
 FOLDER = "User_Data_History"
 
+
 # ==========================================================
-# Load Data
+# Load Data (parallel downloads, single cached pass)
 # ==========================================================
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner="Loading on-chain data...")
 def load_data():
 
+    session = requests.Session()
+
     api_url = (
-        f"https://api.github.com/repos/"
-        f"{OWNER}/{REPO}/contents/{FOLDER}?ref={BRANCH}"
+        f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{FOLDER}?ref={BRANCH}"
     )
 
-    response = requests.get(api_url, timeout=30)
+    response = session.get(api_url, timeout=30)
     response.raise_for_status()
-
     files = response.json()
 
-    all_rows = []
-
-    gmp_users = set()
-    tt_users = set()
-
+    # Build the list of (url, service, period) targets first, no network yet
+    targets = []
     for item in files:
-
-        if item["type"] != "file":
+        if item.get("type") != "file":
             continue
 
-        filename = item["name"]
-
-        if not filename.endswith(".csv"):
+        name = item["name"]
+        if not name.endswith(".csv"):
             continue
 
-        if not (
-            filename.startswith("gmp-")
-            or filename.startswith("tt-")
-        ):
-            continue
-
-        service = "GMP" if filename.startswith("gmp-") else "Token Transfer"
-
-        period = filename.replace(".csv", "")
-
-        if service == "GMP":
-            period = period.replace("gmp-", "")
+        if name.startswith("gmp-"):
+            service, period = "GMP", name[len("gmp-"):-4]
+        elif name.startswith("tt-"):
+            service, period = "Token Transfer", name[len("tt-"):-4]
         else:
-            period = period.replace("tt-", "")
+            continue
 
+        targets.append((item["download_url"], service, period))
+
+    def _fetch_one(target):
+        url, service, period = target
         try:
+            r = session.get(url, timeout=60)
+            if r.status_code != 200:
+                return None
 
-            csv_response = requests.get(
-                item["download_url"],
-                timeout=60
-            )
+            df = pd.read_csv(StringIO(r.text))
+            if df.empty or "key" not in df.columns:
+                return None
 
-            if csv_response.status_code != 200:
-                continue
-
-            df = pd.read_csv(StringIO(csv_response.text))
-
-            if df.empty:
-                continue
-
-            if "key" not in df.columns:
-                continue
+            df["Month"] = period
+            df["Service"] = service
+            return df
 
         except Exception:
-            continue
+            return None
 
-        df = df.copy()
+    # Download all files concurrently instead of one-by-one (main bottleneck)
+    all_rows = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futures = [pool.submit(_fetch_one, t) for t in targets]
+        for f in as_completed(futures):
+            df = f.result()
+            if df is not None:
+                all_rows.append(df)
 
-        df["Month"] = period
-        df["Service"] = service
-
-        all_rows.append(df)
-
-        users = set(df["key"].dropna())
-
-        if service == "GMP":
-            gmp_users.update(users)
-        else:
-            tt_users.update(users)
-
-    # ------------------------------------------------------
+    if not all_rows:
+        empty = pd.DataFrame()
+        return empty, empty, empty
 
     all_data = pd.concat(all_rows, ignore_index=True)
 
     all_data["Month"] = pd.to_datetime(all_data["Month"])
+    all_data["Service"] = all_data["Service"].astype("category")
+    all_data["key"] = all_data["key"].astype("string")
+
+    for col in ("num_txs", "volume"):
+        if col in all_data.columns:
+            all_data[col] = pd.to_numeric(all_data[col], errors="coerce").fillna(0)
 
     # ------------------------------------------------------
-    # Monthly Active Users
+    # Monthly Active Users (per service)
     # ------------------------------------------------------
 
     monthly_df = (
-        all_data
-        .groupby(["Month", "Service"])["key"]
+        all_data.groupby(["Month", "Service"], observed=True)["key"]
         .nunique()
         .reset_index(name="Users")
         .sort_values("Month")
     )
-
     monthly_df["Month"] = monthly_df["Month"].dt.strftime("%Y-%m")
 
     # ------------------------------------------------------
-    # Donut
+    # Donut (global unique users per service)
     # ------------------------------------------------------
 
-    donut_df = pd.DataFrame(
-        {
-            "Service": [
-                "GMP",
-                "Token Transfer"
-            ],
-            "Users": [
-                len(gmp_users),
-                len(tt_users)
-            ]
-        }
+    donut_df = (
+        all_data.groupby("Service", observed=True)["key"]
+        .nunique()
+        .reindex(["GMP", "Token Transfer"])
+        .fillna(0)
+        .reset_index(name="Users")
     )
 
     return all_data, monthly_df, donut_df
 
-# ==========================================================
-# Load
-# ==========================================================
 
 all_data, monthly_df, donut_df = load_data()
 
+if all_data.empty:
+    st.error("No data could be loaded from the repository.")
+    st.stop()
+
+
 # ==========================================================
-# KPI Calculation
+# All heavy derived tables computed ONCE, in one cached call
+# (avoids recomputing on every widget interaction / rerun,
+#  and avoids the previous O(n^2) history-rebuild loop)
+# ==========================================================
+
+@st.cache_data(show_spinner=False)
+def compute_all_metrics(df: pd.DataFrame):
+
+    monthly_users = df.groupby("Month")["key"].apply(set).sort_index()
+    months = list(monthly_users.index)
+
+    growth_rows = []
+    lifecycle_rows = []
+
+    seen = set()                 # all users seen through current month (growth)
+    hist_before_prev = set()     # union of months[0 .. i-2]  (lifecycle)
+    prev_users = set()           # monthly_users[months[i-1]]
+    prev_active = None
+
+    for i, month in enumerate(months):
+        current = monthly_users[month]
+        active = len(current)
+
+        # ---- Growth metrics ----
+        new = len(current - seen)
+        returning = len(current & seen)
+
+        if i == 0:
+            churned = 0
+            growth_rate = np.nan
+        else:
+            churned = len(prev_users - current)
+            growth_rate = (
+                (active - prev_active) / prev_active * 100
+                if prev_active else np.nan
+            )
+
+        net_growth = new - churned
+        seen |= current
+        cumulative = len(seen)
+
+        growth_rows.append(
+            {
+                "Month": month,
+                "Active Users": active,
+                "New Users": new,
+                "Returning Users": returning,
+                "Churned Users": churned,
+                "Net User Growth": net_growth,
+                "User Growth Rate": growth_rate,
+                "Cumulative Users": cumulative,
+            }
+        )
+
+        # ---- Lifecycle metrics (reactivation / resurrection) ----
+        if i == 0:
+            reactivated = set()
+            lc_churned = set()
+            resurrection_rate = 0.0
+        else:
+            reactivated = (current - prev_users) & hist_before_prev
+            lc_churned = prev_users - current
+            inactive = hist_before_prev - prev_users
+            resurrection_rate = (
+                len(reactivated) / len(inactive) * 100 if inactive else 0.0
+            )
+
+        lifecycle_rows.append(
+            {
+                "Month": month,
+                "Reactivated Users": len(reactivated),
+                "Churned Users": len(lc_churned),
+                "Resurrection Rate": resurrection_rate,
+            }
+        )
+
+        # roll state forward
+        hist_before_prev = hist_before_prev | prev_users
+        prev_users = current
+        prev_active = active
+
+    growth_df = pd.DataFrame(growth_rows)
+    growth_df["Month"] = pd.to_datetime(growth_df["Month"]).dt.strftime("%Y-%m")
+
+    lifecycle_df = pd.DataFrame(lifecycle_rows)
+    lifecycle_df["Month"] = pd.to_datetime(lifecycle_df["Month"]).dt.strftime("%Y-%m")
+
+    # ---- Per-user stats (used by KPIs, Lorenz, Pareto) ----
+    user_stats = df.groupby("key", as_index=False, observed=True).agg(
+        Total_Transactions=("num_txs", "sum"),
+        Total_Volume=("volume", "sum"),
+    )
+
+    # ---- Monthly average / median volume & tx per user ----
+    monthly_user_stats = df.groupby(["Month", "key"], as_index=False, observed=True).agg(
+        Volume=("volume", "sum"),
+        Transactions=("num_txs", "sum"),
+    )
+    monthly_metrics = monthly_user_stats.groupby("Month", as_index=False).agg(
+        Avg_Volume=("Volume", "mean"),
+        Median_Volume=("Volume", "median"),
+        Avg_Tx=("Transactions", "mean"),
+        Median_Tx=("Transactions", "median"),
+    )
+    monthly_metrics["Month"] = pd.to_datetime(monthly_metrics["Month"]).dt.strftime("%Y-%m")
+
+    return growth_df, lifecycle_df, user_stats, monthly_metrics
+
+
+growth_df, lifecycle_df, user_stats, monthly_metrics = compute_all_metrics(all_data)
+
+
+def gini_coefficient(values: np.ndarray) -> float:
+    """Vectorized Gini coefficient (values must be >= 0)."""
+    v = np.sort(np.asarray(values, dtype=float))
+    v = v[v >= 0]
+    n = v.size
+    if n == 0 or v.sum() == 0:
+        return 0.0
+    idx = np.arange(1, n + 1)
+    return (2 * np.sum(idx * v)) / (n * v.sum()) - (n + 1) / n
+
+
+# ==========================================================
+# KPI Row 1
 # ==========================================================
 
 latest_month = all_data["Month"].max()
+latest_df = all_data[all_data["Month"] == latest_month]
 
-latest_df = all_data[
-    all_data["Month"] == latest_month
-]
-
-first_month = (
-    all_data
-    .groupby("key")["Month"]
-    .min()
-)
+first_month = all_data.groupby("key")["Month"].min()
 
 total_unique_users = all_data["key"].nunique()
-
-new_users = (
-    first_month == latest_month
-).sum()
+new_users = (first_month == latest_month).sum()
 
 returning_users = latest_df[
-    latest_df["key"].isin(
-        first_month[
-            first_month < latest_month
-        ].index
-    )
+    latest_df["key"].isin(first_month[first_month < latest_month].index)
 ]["key"].nunique()
-
-# ==========================================================
-# KPI Row
-# ==========================================================
 
 kpi1, kpi2, kpi3 = st.columns(3)
 
 with kpi1:
-    st.metric(
-        label="Total Unique Users",
-        value=f"{total_unique_users:,}"
-    )
+    st.metric("Total Unique Users", f"{total_unique_users:,}")
 
 with kpi2:
-    st.metric(
-        label="New Users (30d)",
-        value=f"{new_users:,}"
-    )
+    st.metric("New Users (30d)", f"{new_users:,}")
 
 with kpi3:
     st.metric(
-        label="Returning Users (30d)",
-        value=f"{returning_users:,}",
-        help="Users who were active in the latest month and had at least one activity before the latest month."
+        "Returning Users (30d)",
+        f"{returning_users:,}",
+        help="Users who were active in the latest month and had at least one activity before the latest month.",
     )
 
 st.markdown("---")
 
 # ==========================================================
-# Charts
+# Charts: Monthly Active Users (stacked) + Donut
 # ==========================================================
 
-col1, col2 = st.columns([3,1])
+col1, col2 = st.columns([3, 1])
 
 with col1:
-
     fig = px.bar(
         monthly_df,
         x="Month",
@@ -226,104 +311,24 @@ with col1:
         color="Service",
         barmode="stack",
         text="Users",
-        color_discrete_map={
-            "GMP":"#ff7400",
-            "Token Transfer":"#00a1f7"
-        }
+        color_discrete_map={"GMP": "#ff7400", "Token Transfer": "#00a1f7"},
     )
-
-    fig.update_layout(
-        title="Monthly Active Users",
-        height=500,
-        hovermode="x unified"
-    )
-
-    fig.update_traces(
-        textposition="inside"
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+    fig.update_layout(title="Monthly Active Users", height=500, hovermode="x unified")
+    fig.update_traces(textposition="inside")
+    st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-
     fig2 = px.pie(
         donut_df,
         names="Service",
         values="Users",
         hole=0.65,
         color="Service",
-        color_discrete_map={
-            "GMP":"#ff7400",
-            "Token Transfer":"#00a1f7"
-        }
+        color_discrete_map={"GMP": "#ff7400", "Token Transfer": "#00a1f7"},
     )
-
-    fig2.update_layout(
-        title="Unique Users",
-        height=500
-    )
-
-    fig2.update_traces(
-        textinfo="percent+value"
-    )
-
-    st.plotly_chart(
-        fig2,
-        use_container_width=True
-    )
-
-# ==========================================================
-# User Growth Data
-# ==========================================================
-
-# هر کاربر فقط یک بار در هر ماه شمرده شود
-monthly_users = (
-    all_data.groupby("Month")["key"]
-    .apply(set)
-    .sort_index()
-)
-
-months = list(monthly_users.index)
-
-growth_rows = []
-
-seen_users = set()
-
-for i, month in enumerate(months):
-
-    current_users = monthly_users[month]
-
-    # Active Users
-    active_users = len(current_users)
-
-    # New Users
-    new_users = len(current_users - seen_users)
-
-    # Returning Users
-    returning_users = len(current_users & seen_users)
-
-    # بروزرسانی کاربران دیده شده
-    seen_users.update(current_users)
-
-    # Cumulative Users
-    cumulative_users = len(seen_users)
-
-    growth_rows.append(
-        {
-            "Month": month,
-            "New Users": new_users,
-            "Returning Users": returning_users,
-            "Active Users": active_users,
-            "Cumulative Users": cumulative_users,
-        }
-    )
-
-growth_df = pd.DataFrame(growth_rows)
-
-growth_df["Month"] = growth_df["Month"].dt.strftime("%Y-%m")
+    fig2.update_layout(title="Unique Users", height=500)
+    fig2.update_traces(textinfo="percent+value")
+    st.plotly_chart(fig2, use_container_width=True)
 
 # ==========================================================
 # User Growth Charts
@@ -331,23 +336,14 @@ growth_df["Month"] = growth_df["Month"].dt.strftime("%Y-%m")
 
 col1, col2 = st.columns(2)
 
-# ----------------------------------------------------------
-# Active / New / Returning Users
-# ----------------------------------------------------------
-
 with col1:
-
     fig = px.bar(
         growth_df,
         x="Month",
         y=["New Users", "Returning Users"],
         barmode="stack",
-        color_discrete_map={
-            "New Users": "#58fd86",
-            "Returning Users": "#9f58fd",
-        },
+        color_discrete_map={"New Users": "#58fd86", "Returning Users": "#9f58fd"},
     )
-
     fig.add_scatter(
         x=growth_df["Month"],
         y=growth_df["Active Users"],
@@ -355,7 +351,6 @@ with col1:
         name="Active Users",
         line=dict(color="black", width=2),
     )
-
     fig.update_layout(
         title="Monthly Active Users",
         xaxis_title="Month",
@@ -364,28 +359,11 @@ with col1:
         legend_title="",
         height=500,
     )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-    )
-
-# ----------------------------------------------------------
-# Cumulative Users
-# ----------------------------------------------------------
+    st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-
-    fig2 = px.area(
-        growth_df,
-        x="Month",
-        y="Cumulative Users",
-    )
-
-    fig2.update_traces(
-        line=dict(width=3)
-    )
-
+    fig2 = px.area(growth_df, x="Month", y="Cumulative Users")
+    fig2.update_traces(line=dict(width=3))
     fig2.update_layout(
         title="Cumulative Unique Users",
         xaxis_title="Month",
@@ -393,248 +371,108 @@ with col2:
         hovermode="x unified",
         height=500,
     )
-
-    st.plotly_chart(
-        fig2,
-        use_container_width=True,
-    )
+    st.plotly_chart(fig2, use_container_width=True)
 
 # ==========================================================
-# Additional KPI Calculation
+# KPI Row 2 (reuse growth_df / lifecycle_df last rows — no recompute)
 # ==========================================================
 
-# مرتب‌سازی ماه‌ها
-months = sorted(all_data["Month"].unique())
+last_growth = growth_df.iloc[-1]
+last_lifecycle = lifecycle_df.iloc[-1]
 
-latest_month = months[-1]
-previous_month = months[-2]
-
-# کاربران آخرین ماه
-latest_users = set(
-    all_data.loc[
-        all_data["Month"] == latest_month,
-        "key"
-    ]
-)
-
-# کاربران ماه قبل
-previous_users = set(
-    all_data.loc[
-        all_data["Month"] == previous_month,
-        "key"
-    ]
-)
-
-# کاربران قبل از ماه قبل
-historical_users = set(
-    all_data.loc[
-        all_data["Month"] < previous_month,
-        "key"
-    ]
-)
-
-# Reactivated Users
-reactivated_users = len(
-    (latest_users - previous_users) & historical_users
-)
-
-# Churned Users
-churned_users = len(
-    previous_users - latest_users
-)
-
-# Monthly Active Users
-mau = len(latest_users)
-
-# User Growth %
-previous_mau = len(previous_users)
-
-if previous_mau > 0:
-    user_growth = (mau - previous_mau) / previous_mau * 100
-else:
-    user_growth = 0
-
-# ==========================================================
-# KPI Row 2
-# ==========================================================
+reactivated_users = int(last_lifecycle["Reactivated Users"])
+churned_users = int(last_lifecycle["Churned Users"])
+user_growth = last_growth["User Growth Rate"]
+user_growth = 0.0 if pd.isna(user_growth) else user_growth
+mau = int(last_growth["Active Users"])
 
 kpi4, kpi5, kpi6, kpi7 = st.columns(4)
 
 with kpi4:
     st.metric(
-        label="Reactivated Users",
-        value=f"{reactivated_users:,}",
-        help=(
-            "Users who were active in the latest month, "
-            "inactive in the previous month, "
-            "but had activity before that."
-        )
+        "Reactivated Users",
+        f"{reactivated_users:,}",
+        help="Users who were active in the latest month, inactive in the previous month, but had activity before that.",
     )
 
 with kpi5:
     st.metric(
-        label="Churned Users",
-        value=f"{churned_users:,}",
-        help=(
-            "Users who were active in the previous month "
-            "but were not active in the latest month."
-        )
+        "Churned Users",
+        f"{churned_users:,}",
+        help="Users who were active in the previous month but were not active in the latest month.",
     )
 
 with kpi6:
     st.metric(
-        label="User Growth %",
-        value=f"{user_growth:.2f}%",
-        help=(
-            "Percentage change in Monthly Active Users (MAU) "
-            "compared with the previous month."
-        )
+        "User Growth %",
+        f"{user_growth:.2f}%",
+        help="Percentage change in Monthly Active Users (MAU) compared with the previous month.",
     )
 
 with kpi7:
     st.metric(
-        label="Monthly Active Users",
-        value=f"{mau:,}",
-        help=(
-            "Total number of unique users "
-            "who were active in the latest month."
-        )
+        "Monthly Active Users",
+        f"{mau:,}",
+        help="Total number of unique users who were active in the latest month.",
     )
 
 # ==========================================================
-# User-Level Statistics
+# KPI Row 3 — User-Level Statistics
 # ==========================================================
-
-user_stats = (
-    all_data
-    .groupby("key", as_index=False)
-    .agg(
-        Total_Transactions=("num_txs", "sum"),
-        Total_Volume=("volume", "sum"),
-    )
-)
 
 avg_transactions = user_stats["Total_Transactions"].mean()
 median_transactions = user_stats["Total_Transactions"].median()
-
 avg_volume = user_stats["Total_Volume"].mean()
 median_volume = user_stats["Total_Volume"].median()
-
-# ==========================================================
-# KPI Row 3
-# ==========================================================
 
 kpi8, kpi9, kpi10, kpi11 = st.columns(4)
 
 with kpi8:
     st.metric(
-        label="Average Transactions/User",
-        value=f"{avg_transactions:,.2f}",
-        help="Average number of transactions performed by each unique user across the entire dataset."
+        "Average Transactions/User",
+        f"{avg_transactions:,.2f}",
+        help="Average number of transactions performed by each unique user across the entire dataset.",
     )
 
 with kpi9:
     st.metric(
-        label="Median Transactions/User",
-        value=f"{median_transactions:,.0f}",
-        help="Median number of transactions per unique user across the entire dataset."
+        "Median Transactions/User",
+        f"{median_transactions:,.0f}",
+        help="Median number of transactions per unique user across the entire dataset.",
     )
 
 with kpi10:
     st.metric(
-        label="Average Volume/User",
-        value=f"${avg_volume:,.2f}",
-        help="Average transfer volume per unique user across the entire dataset."
+        "Average Volume/User",
+        f"${avg_volume:,.2f}",
+        help="Average transfer volume per unique user across the entire dataset.",
     )
 
 with kpi11:
     st.metric(
-        label="Median Volume/User",
-        value=f"${median_volume:,.2f}",
-        help="Median transfer volume per unique user across the entire dataset."
+        "Median Volume/User",
+        f"${median_volume:,.2f}",
+        help="Median transfer volume per unique user across the entire dataset.",
     )
 
 # ==========================================================
-# Advanced Distribution Metrics
+# KPI Row 4 — Advanced Distribution Metrics
 # ==========================================================
 
-# Total Volume
 total_volume = user_stats["Total_Volume"].sum()
 
-# -------------------------------
-# Top 100 Users Share
-# -------------------------------
-
-top100_volume = (
-    user_stats
-    .nlargest(100, "Total_Volume")["Total_Volume"]
-    .sum()
-)
-
-top100_share = (
-    top100_volume / total_volume * 100
-    if total_volume > 0 else 0
-)
-
-# -------------------------------
-# Whale Dominance
-# Top 1% users by volume
-# -------------------------------
+top100_volume = user_stats.nlargest(100, "Total_Volume")["Total_Volume"].sum()
+top100_share = (top100_volume / total_volume * 100) if total_volume > 0 else 0
 
 n_whales = max(1, int(len(user_stats) * 0.01))
+whale_volume = user_stats.nlargest(n_whales, "Total_Volume")["Total_Volume"].sum()
+whale_dominance = (whale_volume / total_volume * 100) if total_volume > 0 else 0
 
-whale_volume = (
-    user_stats
-    .nlargest(n_whales, "Total_Volume")["Total_Volume"]
-    .sum()
-)
+volumes = user_stats["Total_Volume"].fillna(0).to_numpy()
+gini = gini_coefficient(volumes)
 
-whale_dominance = (
-    whale_volume / total_volume * 100
-    if total_volume > 0 else 0
-)
-
-# -------------------------------
-# Gini Coefficient
-# -------------------------------
-
-volumes = (
-    user_stats["Total_Volume"]
-    .fillna(0)
-    .values
-)
-
-volumes = volumes[volumes >= 0]
-
-volumes.sort()
-
-n = len(volumes)
-
-if n == 0 or volumes.sum() == 0:
-
-    gini = 0
-
-else:
-
-    index = range(1, n + 1)
-
-    gini = (
-        (
-            2 * sum(i * x for i, x in zip(index, volumes))
-        ) / (n * volumes.sum())
-    ) - (n + 1) / n
-
-# -------------------------------
-# Herfindahl Index (HHI)
-# -------------------------------
-
-shares = volumes / volumes.sum()
-
-hhi = (shares ** 2).sum()
-
-# ==========================================================
-# KPI Row 4
-# ==========================================================
+pos_volumes = volumes[volumes >= 0]
+hhi = ((pos_volumes / pos_volumes.sum()) ** 2).sum() if pos_volumes.sum() > 0 else 0
 
 kpi12, kpi13, kpi14, kpi15 = st.columns(4)
 
@@ -642,235 +480,54 @@ with kpi12:
     st.metric(
         "Top 100 Users Share",
         f"{top100_share:.2f}%",
-        help="Percentage of the total transfer volume contributed by the top 100 users."
+        help="Percentage of the total transfer volume contributed by the top 100 users.",
     )
 
 with kpi13:
     st.metric(
         "Whale Dominance",
         f"{whale_dominance:.2f}%",
-        help="Percentage of the total transfer volume contributed by the top 1% highest-volume users."
+        help="Percentage of the total transfer volume contributed by the top 1% highest-volume users.",
     )
 
 with kpi14:
     st.metric(
         "Gini Coefficient",
         f"{gini:.3f}",
-        help="Measures inequality in transfer volume distribution across users. Values closer to 1 indicate higher concentration."
+        help="Measures inequality in transfer volume distribution across users. Values closer to 1 indicate higher concentration.",
     )
 
 with kpi15:
     st.metric(
         "Herfindahl Index",
         f"{hhi:.4f}",
-        help="Measures concentration of transfer volume among users. Higher values indicate greater concentration."
+        help="Measures concentration of transfer volume among users. Higher values indicate greater concentration.",
     )
 
 # ==========================================================
-# User Growth Metrics
-# ==========================================================
-
-monthly_users = (
-    all_data.groupby("Month")["key"]
-    .apply(set)
-    .sort_index()
-)
-
-months = list(monthly_users.index)
-
-growth_rows = []
-
-seen_users = set()
-
-for i, month in enumerate(months):
-
-    current_users = monthly_users[month]
-
-    # Active Users
-    active_users = len(current_users)
-
-    # New Users
-    new_users = len(current_users - seen_users)
-
-    # Returning Users
-    returning_users = len(current_users & seen_users)
-
-    # Churned Users
-    if i == 0:
-        churned_users = 0
-    else:
-        previous_users = monthly_users[months[i-1]]
-        churned_users = len(previous_users - current_users)
-
-    # Net User Growth
-    net_growth = new_users - churned_users
-
-    # User Growth Rate
-    if i == 0:
-        growth_rate = 0
-    else:
-        previous_active = len(monthly_users[months[i-1]])
-        growth_rate = (
-            (active_users - previous_active)
-            / previous_active * 100
-            if previous_active > 0 else 0
-        )
-
-    seen_users.update(current_users)
-
-    growth_rows.append(
-        {
-            "Month": month,
-            "Active Users": active_users,
-            "New Users": new_users,
-            "Returning Users": returning_users,
-            "Churned Users": churned_users,
-            "Net User Growth": net_growth,
-            "User Growth Rate": growth_rate,
-        }
-    )
-
-growth_metrics_df = pd.DataFrame(growth_rows)
-
-growth_metrics_df["Month"] = (
-    growth_metrics_df["Month"]
-    .dt.strftime("%Y-%m")
-)
-
-# ==========================================================
-# Growth Charts
+# Growth Rate / Net Growth Charts
 # ==========================================================
 
 col1, col2 = st.columns(2)
-
-# ==========================================================
-# User Growth Metrics
-# ==========================================================
-
-monthly_users = (
-    all_data.groupby("Month")["key"]
-    .apply(set)
-    .sort_index()
-)
-
-months = list(monthly_users.index)
-
-growth_rows = []
-
-seen_users = set()
-
-for i, month in enumerate(months):
-
-    current_users = monthly_users[month]
-
-    # Active Users
-    active_users = len(current_users)
-
-    # New Users
-    new_users = len(current_users - seen_users)
-
-    # Returning Users
-    returning_users = len(current_users & seen_users)
-
-    # Churned Users
-    if i == 0:
-        churned_users = 0
-    else:
-        previous_users = monthly_users[months[i - 1]]
-        churned_users = len(previous_users - current_users)
-
-    # Net User Growth
-    net_growth = new_users - churned_users
-
-    # User Growth Rate
-    if i == 0:
-        growth_rate = None
-    else:
-        previous_active = len(monthly_users[months[i - 1]])
-
-        growth_rate = (
-            (active_users - previous_active)
-            / previous_active
-            * 100
-            if previous_active > 0 else None
-        )
-
-    seen_users.update(current_users)
-
-    growth_rows.append(
-        {
-            "Month": month,
-            "Active Users": active_users,
-            "New Users": new_users,
-            "Returning Users": returning_users,
-            "Churned Users": churned_users,
-            "Net User Growth": net_growth,
-            "User Growth Rate": growth_rate,
-        }
-    )
-
-growth_metrics_df = pd.DataFrame(growth_rows)
-
-growth_metrics_df["Month"] = pd.to_datetime(
-    growth_metrics_df["Month"]
-)
-
-# فقط از فوریه 2022 به بعد
-growth_rate_df = growth_metrics_df[
-    growth_metrics_df["Month"] >= "2022-02-01"
-].copy()
-
-growth_rate_df["Month"] = (
-    growth_rate_df["Month"]
-    .dt.strftime("%Y-%m")
-)
-
-growth_metrics_df["Month"] = (
-    growth_metrics_df["Month"]
-    .dt.strftime("%Y-%m")
-)
-
-# ==========================================================
-# Growth Charts
-# ==========================================================
-
-col1, col2 = st.columns(2)
-
-# ----------------------------------------------------------
-# Monthly User Growth Rate
-# ----------------------------------------------------------
 
 with col1:
-
-    growth_rate_df["Color"] = growth_rate_df[
-        "User Growth Rate"
-    ].apply(
-        lambda x: "#16a34a" if x >= 0 else "#dc2626"
+    # first month has no defined growth rate (NaN) — drop it instead of a
+    # hard-coded date cut-off
+    growth_rate_df = growth_df.dropna(subset=["User Growth Rate"]).copy()
+    growth_rate_df["Color"] = np.where(
+        growth_rate_df["User Growth Rate"] >= 0, "#16a34a", "#dc2626"
     )
 
     fig = px.bar(
-        growth_rate_df,
-        x="Month",
-        y="User Growth Rate",
-        text="User Growth Rate",
+        growth_rate_df, x="Month", y="User Growth Rate", text="User Growth Rate"
     )
-
     fig.update_traces(
         marker_color=growth_rate_df["Color"],
         texttemplate="%{y:.1f}%",
         textposition="outside",
-        hovertemplate=(
-            "<b>%{x}</b><br>"
-            "Growth Rate: %{y:.2f}%<extra></extra>"
-        ),
+        hovertemplate="<b>%{x}</b><br>Growth Rate: %{y:.2f}%<extra></extra>",
     )
-
-    fig.add_hline(
-        y=0,
-        line_dash="dash",
-        line_color="gray",
-    )
-
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
     fig.update_layout(
         title="Monthly User Growth Rate",
         xaxis_title="Month",
@@ -879,54 +536,29 @@ with col1:
         height=500,
         showlegend=False,
     )
-
-    st.plotly_chart(
-        fig,
-        width="stretch",
-    )
-
-# ----------------------------------------------------------
-# Net User Growth
-# ----------------------------------------------------------
+    st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-
-    growth_metrics_df["Color"] = growth_metrics_df[
-        "Net User Growth"
-    ].apply(
-        lambda x: "#16a34a" if x >= 0 else "#dc2626"
+    net_growth_df = growth_df.copy()
+    net_growth_df["Color"] = np.where(
+        net_growth_df["Net User Growth"] >= 0, "#16a34a", "#dc2626"
     )
 
     fig2 = px.bar(
-        growth_metrics_df,
-        x="Month",
-        y="Net User Growth",
-        text="Net User Growth",
+        net_growth_df, x="Month", y="Net User Growth", text="Net User Growth"
     )
-
     fig2.update_traces(
-        marker_color=growth_metrics_df["Color"],
+        marker_color=net_growth_df["Color"],
         textposition="outside",
-        hovertemplate=(
-            "<b>%{x}</b><br>"
-            "Net Growth: %{y:,}<extra></extra>"
-        ),
+        hovertemplate="<b>%{x}</b><br>Net Growth: %{y:,}<extra></extra>",
     )
-
-    fig2.add_hline(
-        y=0,
-        line_dash="dash",
-        line_color="gray",
-    )
-
+    fig2.add_hline(y=0, line_dash="dash", line_color="gray")
     fig2.update_layout(
         title=(
             "Net User Growth"
-            "<br><sup>"
-            "Net User Growth = New Users − Churned Users "
+            "<br><sup>Net User Growth = New Users − Churned Users "
             "(Churned Users are users who were active in the previous month "
-            "but not in the current month.)"
-            "</sup>"
+            "but not in the current month.)</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Users",
@@ -934,258 +566,79 @@ with col2:
         height=500,
         showlegend=False,
     )
-
-    st.plotly_chart(
-        fig2,
-        width="stretch",
-    )
+    st.plotly_chart(fig2, use_container_width=True)
 
 # ==========================================================
-# Monthly User Statistics
-# ==========================================================
-
-# هر کاربر در هر ماه فقط یک بار در نظر گرفته شود
-monthly_user_stats = (
-    all_data
-    .groupby(["Month", "key"], as_index=False)
-    .agg(
-        Volume=("volume", "sum"),
-        Transactions=("num_txs", "sum"),
-    )
-)
-
-monthly_metrics = (
-    monthly_user_stats
-    .groupby("Month", as_index=False)
-    .agg(
-        Avg_Volume=("Volume", "mean"),
-        Median_Volume=("Volume", "median"),
-        Avg_Tx=("Transactions", "mean"),
-        Median_Tx=("Transactions", "median"),
-    )
-)
-
-monthly_metrics["Month"] = (
-    pd.to_datetime(monthly_metrics["Month"])
-    .dt.strftime("%Y-%m")
-)
-
-# ==========================================================
-# Monthly User Statistics Charts
+# Monthly Average & Median Volume / Transactions per User
 # ==========================================================
 
 col1, col2 = st.columns(2)
 
-# ----------------------------------------------------------
-# Monthly Average & Median Volume per User
-# ----------------------------------------------------------
-
 with col1:
-
-    fig = make_subplots(
-        specs=[[{"secondary_y": True}]]
-    )
-
-    # Average Volume
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Scatter(
             x=monthly_metrics["Month"],
             y=monthly_metrics["Avg_Volume"],
             mode="lines+markers",
             name="Average",
-            line=dict(
-                color="#00a1f7",
-                width=3,
-            ),
+            line=dict(color="#00a1f7", width=3),
         ),
         secondary_y=False,
     )
-
-    # Median Volume
     fig.add_trace(
         go.Scatter(
             x=monthly_metrics["Month"],
             y=monthly_metrics["Median_Volume"],
             mode="lines+markers",
             name="Median",
-            line=dict(
-                color="#ff7400",
-                width=3,
-            ),
+            line=dict(color="#ff7400", width=3),
         ),
         secondary_y=True,
     )
-
     fig.update_layout(
-
         title="Monthly Average & Median Volume per User",
-
         hovermode="x unified",
-
         height=500,
-
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="center",
-            x=0.5,
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
     )
-
-    fig.update_xaxes(
-        title_text="Month"
-    )
-
-    fig.update_yaxes(
-        title_text="Average Volume",
-        secondary_y=False,
-    )
-
-    fig.update_yaxes(
-        title_text="Median Volume",
-        secondary_y=True,
-    )
-
-    st.plotly_chart(
-        fig,
-        width="stretch",
-    )
-
-# ----------------------------------------------------------
-# Monthly Average & Median Transactions per User
-# ----------------------------------------------------------
+    fig.update_xaxes(title_text="Month")
+    fig.update_yaxes(title_text="Average Volume", secondary_y=False)
+    fig.update_yaxes(title_text="Median Volume", secondary_y=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-
-    fig2 = make_subplots(
-        specs=[[{"secondary_y": True}]]
-    )
-
-    # Average Tx
+    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
     fig2.add_trace(
         go.Scatter(
             x=monthly_metrics["Month"],
             y=monthly_metrics["Avg_Tx"],
             mode="lines+markers",
             name="Average",
-            line=dict(
-                color="#00a1f7",
-                width=3,
-            ),
+            line=dict(color="#00a1f7", width=3),
         ),
         secondary_y=False,
     )
-
-    # Median Tx
     fig2.add_trace(
         go.Scatter(
             x=monthly_metrics["Month"],
             y=monthly_metrics["Median_Tx"],
             mode="lines+markers",
             name="Median",
-            line=dict(
-                color="#ff7400",
-                width=3,
-            ),
+            line=dict(color="#ff7400", width=3),
         ),
         secondary_y=True,
     )
-
     fig2.update_layout(
-
         title="Monthly Average & Median Transactions per User",
-
         hovermode="x unified",
-
         height=500,
-
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="center",
-            x=0.5,
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
     )
-
-    fig2.update_xaxes(
-        title_text="Month"
-    )
-
-    fig2.update_yaxes(
-        title_text="Average Transactions",
-        secondary_y=False,
-    )
-
-    fig2.update_yaxes(
-        title_text="Median Transactions",
-        secondary_y=True,
-    )
-
-    st.plotly_chart(
-        fig2,
-        width="stretch",
-    )
-
-# ==========================================================
-# Reactivated Users / Churn / Resurrection Rate
-# ==========================================================
-
-monthly_users = (
-    all_data.groupby("Month")["key"]
-    .apply(set)
-    .sort_index()
-)
-
-months = list(monthly_users.index)
-
-history = set()
-
-lifecycle_rows = []
-
-for i, month in enumerate(months):
-
-    current = monthly_users[month]
-
-    # Previous month
-    previous = monthly_users[months[i-1]] if i > 0 else set()
-
-    # Users active before previous month
-    active_before_previous = history - previous
-
-    # Reactivated
-    reactivated = current & active_before_previous
-
-    # Churned
-    churned = previous - current if i > 0 else set()
-
-    # Resurrection Rate
-    inactive_last_month = history - previous
-
-    resurrection_rate = (
-        len(reactivated) / len(inactive_last_month) * 100
-        if len(inactive_last_month) > 0
-        else 0
-    )
-
-    lifecycle_rows.append(
-        {
-            "Month": month,
-            "Reactivated Users": len(reactivated),
-            "Churned Users": len(churned),
-            "Resurrection Rate": resurrection_rate,
-        }
-    )
-
-    history.update(current)
-
-lifecycle_df = pd.DataFrame(lifecycle_rows)
-
-lifecycle_df["Month"] = (
-    pd.to_datetime(lifecycle_df["Month"])
-    .dt.strftime("%Y-%m")
-)
+    fig2.update_xaxes(title_text="Month")
+    fig2.update_yaxes(title_text="Average Transactions", secondary_y=False)
+    fig2.update_yaxes(title_text="Median Transactions", secondary_y=True)
+    st.plotly_chart(fig2, use_container_width=True)
 
 # ==========================================================
 # User Lifecycle Charts
@@ -1193,1085 +646,297 @@ lifecycle_df["Month"] = (
 
 col1, col2, col3 = st.columns(3)
 
-# ----------------------------------------------------------
-# Monthly Reactivated Users
-# ----------------------------------------------------------
-
 with col1:
-
-    fig = px.bar(
-        lifecycle_df,
-        x="Month",
-        y="Reactivated Users",
-        text="Reactivated Users",
-    )
-
-    fig.update_traces(
-        marker_color="#16a34a",
-        textposition="outside",
-    )
-
+    fig = px.bar(lifecycle_df, x="Month", y="Reactivated Users", text="Reactivated Users")
+    fig.update_traces(marker_color="#16a34a", textposition="outside")
     fig.update_layout(
         title=(
             "Monthly Reactivated Users"
-            "<br><sup>"
-            "Users who became active again after being inactive "
-            "during the previous month."
-            "</sup>"
+            "<br><sup>Users who became active again after being inactive "
+            "during the previous month.</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Users",
         hovermode="x unified",
         height=500,
     )
-
-    st.plotly_chart(
-        fig,
-        width="stretch",
-    )
-
-# ----------------------------------------------------------
-# Monthly Churned Users
-# ----------------------------------------------------------
+    st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-
-    fig2 = px.bar(
-        lifecycle_df,
-        x="Month",
-        y="Churned Users",
-        text="Churned Users",
-    )
-
-    fig2.update_traces(
-        marker_color="#dc2626",
-        textposition="outside",
-    )
-
+    fig2 = px.bar(lifecycle_df, x="Month", y="Churned Users", text="Churned Users")
+    fig2.update_traces(marker_color="#dc2626", textposition="outside")
     fig2.update_layout(
         title=(
             "Monthly Churned Users"
-            "<br><sup>"
-            "Users who were active in the previous month "
-            "but not in the current month."
-            "</sup>"
+            "<br><sup>Users who were active in the previous month "
+            "but not in the current month.</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Users",
         hovermode="x unified",
         height=500,
     )
-
-    st.plotly_chart(
-        fig2,
-        width="stretch",
-    )
-
-# ----------------------------------------------------------
-# Resurrection Rate
-# ----------------------------------------------------------
+    st.plotly_chart(fig2, use_container_width=True)
 
 with col3:
-
-    fig3 = px.line(
-        lifecycle_df,
-        x="Month",
-        y="Resurrection Rate",
-        markers=True,
-    )
-
-    fig3.update_traces(
-        line=dict(width=3, color="#00a1f7"),
-    )
-
+    fig3 = px.line(lifecycle_df, x="Month", y="Resurrection Rate", markers=True)
+    fig3.update_traces(line=dict(width=3, color="#00a1f7"))
     fig3.update_layout(
         title=(
             "Monthly Resurrection Rate"
-            "<br><sup>"
-            "Percentage of previously inactive users "
-            "who became active again during the month."
-            "</sup>"
+            "<br><sup>Percentage of previously inactive users "
+            "who became active again during the month.</sup>"
         ),
         xaxis_title="Month",
         yaxis_title="Rate (%)",
         hovermode="x unified",
         height=500,
     )
-
-    st.plotly_chart(
-        fig3,
-        width="stretch",
-    )
+    st.plotly_chart(fig3, use_container_width=True)
 
 # ==========================================================
-# Reactivated Users / Churn / Resurrection Rate
-# ==========================================================
-
-monthly_users = (
-    all_data.groupby("Month")["key"]
-    .apply(set)
-    .sort_index()
-)
-
-months = list(monthly_users.index)
-
-history = set()
-
-lifecycle_rows = []
-
-for i, month in enumerate(months):
-
-    current = monthly_users[month]
-
-    # Previous month
-    previous = monthly_users[months[i-1]] if i > 0 else set()
-
-    # Users active before previous month
-    active_before_previous = history - previous
-
-    # Reactivated
-    reactivated = current & active_before_previous
-
-    # Churned
-    churned = previous - current if i > 0 else set()
-
-    # Resurrection Rate
-    inactive_last_month = history - previous
-
-    resurrection_rate = (
-        len(reactivated) / len(inactive_last_month) * 100
-        if len(inactive_last_month) > 0
-        else 0
-    )
-
-    lifecycle_rows.append(
-        {
-            "Month": month,
-            "Reactivated Users": len(reactivated),
-            "Churned Users": len(churned),
-            "Resurrection Rate": resurrection_rate,
-        }
-    )
-
-    history.update(current)
-
-lifecycle_df = pd.DataFrame(lifecycle_rows)
-
-lifecycle_df["Month"] = (
-    pd.to_datetime(lifecycle_df["Month"])
-    .dt.strftime("%Y-%m")
-)
-
-# ==========================================================
-# User Lifecycle Metrics
-# ==========================================================
-
-monthly_users = (
-    all_data
-    .groupby("Month")["key"]
-    .apply(set)
-    .sort_index()
-)
-
-months = list(monthly_users.index)
-
-lifecycle_rows = []
-
-for i, month in enumerate(months):
-
-    current_users = monthly_users[month]
-
-    # اولین ماه دیتاست
-    if i == 0:
-
-        lifecycle_rows.append(
-            {
-                "Month": month,
-                "Reactivated Users": 0,
-                "Churned Users": 0,
-                "Resurrection Rate": 0,
-            }
-        )
-
-        continue
-
-
-    previous_users = monthly_users[months[i-1]]
-
-    # تمام کاربران قبل از ماه قبل
-    historical_users = set()
-
-    for previous_month in months[:i-1]:
-        historical_users.update(
-            monthly_users[previous_month]
-        )
-
-
-    # -------------------------------
-    # Reactivated Users
-    # -------------------------------
-
-    reactivated_users = (
-        current_users
-        - previous_users
-    ) & historical_users
-
-
-    # -------------------------------
-    # Churned Users
-    # -------------------------------
-
-    churned_users = (
-        previous_users
-        - current_users
-    )
-
-
-    # -------------------------------
-    # Resurrection Rate
-    # -------------------------------
-
-    inactive_users = (
-        historical_users
-        - previous_users
-    )
-
-    resurrection_rate = (
-        len(reactivated_users)
-        /
-        len(inactive_users)
-        * 100
-        if len(inactive_users) > 0
-        else 0
-    )
-
-
-    lifecycle_rows.append(
-        {
-            "Month": month,
-            "Reactivated Users": len(reactivated_users),
-            "Churned Users": len(churned_users),
-            "Resurrection Rate": resurrection_rate,
-        }
-    )
-
-
-lifecycle_df = pd.DataFrame(lifecycle_rows)
-
-
-lifecycle_df["Month"] = (
-    pd.to_datetime(
-        lifecycle_df["Month"]
-    )
-    .dt.strftime("%Y-%m")
-)
-# ==========================================================
-# PROFESSIONAL LORENZ CURVE
+# Lorenz Curve
 # ==========================================================
 
 st.subheader("📈 Lorenz Curve")
-
 st.caption(
     "The Lorenz Curve visualizes how evenly activity is distributed across users. "
     "The farther the curve deviates from the line of perfect equality, "
     "the more concentrated the network activity becomes."
 )
 
-# ==========================================================
-# AGGREGATE USER DATA
-# ==========================================================
+lorenz_metric = st.selectbox("Metric", ["Volume", "Transactions"], key="lorenz_metric_global")
 
-lorenz_user_df = (
-    all_data
-    .groupby("key", as_index=False)
-    .agg(
-        volume=("volume", "sum"),
-        num_txs=("num_txs", "sum")
+if lorenz_metric == "Volume":
+    lorenz_values = user_stats["Total_Volume"].clip(lower=0)
+    x_title, y_title, lorenz_color = (
+        "Cumulative Share of Users",
+        "Cumulative Share of Volume",
+        "#c58ce2",
     )
-)
-
-# Ensure numeric values
-lorenz_user_df["volume"] = pd.to_numeric(
-    lorenz_user_df["volume"],
-    errors="coerce"
-).fillna(0)
-
-lorenz_user_df["num_txs"] = pd.to_numeric(
-    lorenz_user_df["num_txs"],
-    errors="coerce"
-).fillna(0)
-
-
-# ==========================================================
-# METRIC SELECTOR
-# ==========================================================
-
-metric = st.selectbox(
-    "Metric",
-    ["Volume", "Transactions"],
-    key="lorenz_metric_global"
-)
-
-
-# ==========================================================
-# SELECT METRIC
-# ==========================================================
-
-if metric == "Volume":
-
-    values = (
-        lorenz_user_df["volume"]
-        .clip(lower=0)
-        .sort_values()
-        .reset_index(drop=True)
-    )
-
-    x_title = "Cumulative Share of Users"
-
-    y_title = "Cumulative Share of Volume"
-
-    color = "#c58ce2"
-
+    lorenz_fill = "rgba(197,140,226,0.20)"
 else:
-
-    values = (
-        lorenz_user_df["num_txs"]
-        .clip(lower=0)
-        .sort_values()
-        .reset_index(drop=True)
+    lorenz_values = user_stats["Total_Transactions"].clip(lower=0)
+    x_title, y_title, lorenz_color = (
+        "Cumulative Share of Users",
+        "Cumulative Share of Transactions",
+        "#e1fb43",
     )
+    lorenz_fill = "rgba(225,251,67,0.20)"
 
-    x_title = "Cumulative Share of Users"
+lorenz_values = np.sort(lorenz_values[lorenz_values > 0].to_numpy())
+n_lorenz = lorenz_values.size
 
-    y_title = "Cumulative Share of Transactions"
+if n_lorenz == 0:
+    st.info("No users with positive activity found.")
+else:
+    cum_users = np.arange(1, n_lorenz + 1) / n_lorenz
+    cum_values = np.cumsum(lorenz_values) / lorenz_values.sum()
 
-    color = "#e1fb43"
+    lorenz_x = np.insert(cum_users, 0, 0)
+    lorenz_y = np.insert(cum_values, 0, 0)
 
+    lorenz_gini = gini_coefficient(lorenz_values)
 
-# ==========================================================
-# REMOVE ZERO-ACTIVITY USERS
-# ==========================================================
-
-values = (
-    values[
-        values > 0
+    gap = lorenz_x - lorenz_y
+    hover_text = [
+        f"<b>Users:</b> {x * 100:.2f}%<br><b>Activity:</b> {y * 100:.2f}%"
+        f"<br><b>Inequality Gap:</b> {g * 100:.2f}%"
+        for x, y, g in zip(lorenz_x, lorenz_y, gap)
     ]
-    .reset_index(drop=True)
-)
 
-n = len(values)
+    if lorenz_gini < 0.30:
+        interpretation = "Low Inequality"
+    elif lorenz_gini < 0.60:
+        interpretation = "Moderate Inequality"
+    elif lorenz_gini < 0.80:
+        interpretation = "High Inequality"
+    else:
+        interpretation = "Extreme Concentration"
 
+    lorenz_fig = go.Figure()
 
-if n == 0:
-
-    st.info(
-        "No users with positive activity found."
-    )
-
-    st.stop()
-
-
-# ==========================================================
-# LORENZ CURVE DATA
-# ==========================================================
-
-cum_users = (
-    np.arange(1, n + 1)
-    / n
-)
-
-cum_values = (
-    values.cumsum()
-    / values.sum()
-)
-
-lorenz_x = np.insert(
-    np.asarray(cum_users),
-    0,
-    0
-)
-
-lorenz_y = np.insert(
-    np.asarray(cum_values),
-    0,
-    0
-)
-
-
-# ==========================================================
-# GINI COEFFICIENT
-# ==========================================================
-
-gini = (
-    np.sum(
-        (
-            2 * np.arange(1, n + 1)
-            - n
-            - 1
+    lorenz_fig.add_trace(
+        go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode="lines",
+            line=dict(color="gray", width=2, dash="dash"),
+            name="Perfect Equality",
+            hoverinfo="skip",
         )
-        * values
-    )
-    /
-    (
-        n
-        * values.sum()
-    )
-)
-
-
-# ==========================================================
-# GAP FROM PERFECT EQUALITY
-# ==========================================================
-
-gap = (
-    lorenz_x
-    - lorenz_y
-)
-
-
-hover_text = [
-
-    (
-        f"<b>Users:</b> {x * 100:.2f}%"
-        f"<br>"
-        f"<b>Activity:</b> {y * 100:.2f}%"
-        f"<br>"
-        f"<b>Inequality Gap:</b> {g * 100:.2f}%"
     )
 
-    for x, y, g in zip(
-        lorenz_x,
-        lorenz_y,
-        gap
+    lorenz_fig.add_trace(
+        go.Scatter(
+            x=np.concatenate([lorenz_x, lorenz_x[::-1]]),
+            y=np.concatenate([lorenz_x, lorenz_y[::-1]]),
+            fill="toself",
+            fillcolor=lorenz_fill,
+            line=dict(color="rgba(0,0,0,0)"),
+            hoverinfo="skip",
+            name="Inequality Area",
+        )
     )
-]
 
+    lorenz_fig.add_trace(
+        go.Scatter(
+            x=lorenz_x,
+            y=lorenz_y,
+            mode="lines",
+            line=dict(color=lorenz_color, width=4),
+            customdata=hover_text,
+            hovertemplate="%{customdata}<extra></extra>",
+            name="Lorenz Curve",
+        )
+    )
 
-# ==========================================================
-# INEQUALITY INTERPRETATION
-# ==========================================================
+    lorenz_fig.add_annotation(
+        x=0.65,
+        y=0.18,
+        showarrow=False,
+        align="left",
+        bgcolor="rgba(255,255,255,0.92)",
+        bordercolor=lorenz_color,
+        borderwidth=1,
+        text=f"<b>Gini Coefficient</b><br>{lorenz_gini:.3f}<br><br><b>{interpretation}</b>",
+    )
 
-if gini < 0.30:
+    lorenz_fig.add_annotation(
+        x=0.90, y=0.96, text="<b>Perfect Equality</b>", showarrow=False,
+        font=dict(color="gray", size=12),
+    )
 
-    interpretation = "Low Inequality"
+    lorenz_fig.add_annotation(
+        x=0.42, y=0.25, text="<b>Current Distribution</b>", showarrow=False,
+        font=dict(color=lorenz_color, size=12),
+    )
 
-elif gini < 0.60:
-
-    interpretation = "Moderate Inequality"
-
-elif gini < 0.80:
-
-    interpretation = "High Inequality"
-
-else:
-
-    interpretation = "Extreme Concentration"
-
-
-# ==========================================================
-# CREATE FIGURE
-# ==========================================================
-
-fig = go.Figure()
-
-
-# ==========================================================
-# PERFECT EQUALITY LINE
-# ==========================================================
-
-fig.add_trace(
-
-    go.Scatter(
-
-        x=[0, 1],
-
-        y=[0, 1],
-
-        mode="lines",
-
-        line=dict(
-            color="gray",
-            width=2,
-            dash="dash"
+    lorenz_fig.update_layout(
+        template="plotly_white",
+        height=600,
+        title=f"Lorenz Curve ({lorenz_metric}) — Gini = {lorenz_gini:.3f}",
+        margin=dict(l=20, r=20, t=70, b=20),
+        hovermode="closest",
+        legend=dict(orientation="h", y=1.03, x=0),
+        xaxis=dict(
+            title=x_title, tickformat=".0%", range=[0, 1],
+            showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False,
         ),
-
-        name="Perfect Equality",
-
-        hoverinfo="skip"
+        yaxis=dict(
+            title=y_title, tickformat=".0%", range=[0, 1],
+            showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False,
+        ),
     )
-)
 
-
-# ==========================================================
-# INEQUALITY AREA
-# ==========================================================
-
-fig.add_trace(
-
-    go.Scatter(
-
-        x=np.concatenate(
-            [
-                lorenz_x,
-                lorenz_x[::-1]
-            ]
-        ),
-
-        y=np.concatenate(
-            [
-                lorenz_x,
-                lorenz_y[::-1]
-            ]
-        ),
-
-        fill="toself",
-
-        fillcolor=(
-            "rgba(197,140,226,0.20)"
-            if metric == "Volume"
-            else "rgba(225,251,67,0.20)"
-        ),
-
-        line=dict(
-            color="rgba(0,0,0,0)"
-        ),
-
-        hoverinfo="skip",
-
-        name="Inequality Area"
-    )
-)
-
-
+    st.plotly_chart(lorenz_fig, use_container_width=True, key="user_lorenz_curve")
 
 # ==========================================================
-# PROFESSIONAL USER PARETO ANALYSIS
+# User Activity Pareto Analysis
 # ==========================================================
 
 st.subheader("📊 User Activity Pareto Analysis")
-
 st.caption(
     "Shows how Axelar's total user activity is distributed across wallets. "
     "Users are ranked from highest to lowest activity, while the cumulative "
     "line shows the percentage of total activity contributed by the top-ranked users."
 )
 
-# ==========================================================
-# AGGREGATE USER DATA
-# ==========================================================
+pareto_metric = st.selectbox("Metric", ["Volume", "Transactions"], key="pareto_metric_global")
 
-pareto_user_df = (
-    all_data
-    .groupby("key", as_index=False)
-    .agg(
-        volume=("volume", "sum"),
-        num_txs=("num_txs", "sum")
-    )
-)
-
-# Remove invalid values
-pareto_user_df["volume"] = pd.to_numeric(
-    pareto_user_df["volume"],
-    errors="coerce"
-).fillna(0)
-
-pareto_user_df["num_txs"] = pd.to_numeric(
-    pareto_user_df["num_txs"],
-    errors="coerce"
-).fillna(0)
-
-
-# ==========================================================
-# METRIC SELECTOR
-# ==========================================================
-
-metric = st.selectbox(
-    "Metric",
-    ["Volume", "Transactions"],
-    key="pareto_metric_global"
-)
-
-
-# ==========================================================
-# METRIC CONFIGURATION
-# ==========================================================
-
-if metric == "Volume":
-
-    value_col = "volume"
-
-    color_bar = "#c58ce2"
-
-    color_line = "#e1fb43"
-
+if pareto_metric == "Volume":
+    value_col = "Total_Volume"
+    color_bar, color_line = "#c58ce2", "#e1fb43"
     value_title = "Volume ($)"
-
     value_format = "$%{y:,.2f}"
-
     hover_value_label = "Volume"
-
 else:
-
-    value_col = "num_txs"
-
-    color_bar = "#e1fb43"
-
-    color_line = "#c58ce2"
-
+    value_col = "Total_Transactions"
+    color_bar, color_line = "#e1fb43", "#c58ce2"
     value_title = "Transactions"
-
     value_format = "%{y:,}"
-
     hover_value_label = "Transactions"
 
-
-# ==========================================================
-# SORT USERS BY ACTIVITY
-# ==========================================================
-
-pareto_df = (
-    pareto_user_df
-    .sort_values(
-        value_col,
-        ascending=False
-    )
-    .reset_index(drop=True)
-)
-
-pareto_df["Rank"] = (
-    pareto_df.index + 1
-)
-
-
-# ==========================================================
-# TOTAL ACTIVITY
-# ==========================================================
+pareto_df = user_stats.sort_values(value_col, ascending=False).reset_index(drop=True)
+pareto_df["Rank"] = pareto_df.index + 1
 
 total_activity = pareto_df[value_col].sum()
-
 total_users = len(pareto_df)
 
+pareto_df["CumPct"] = (
+    pareto_df[value_col].cumsum() / total_activity * 100 if total_activity > 0 else 0
+)
 
-# ==========================================================
-# CUMULATIVE ACTIVITY SHARE
-# ==========================================================
+pareto_fig = go.Figure()
 
-if total_activity > 0:
-
-    pareto_df["CumPct"] = (
-        pareto_df[value_col].cumsum()
-        / total_activity
-        * 100
-    )
-
-else:
-
-    pareto_df["CumPct"] = 0
-
-
-# ==========================================================
-# CREATE FIGURE
-# ==========================================================
-
-fig = go.Figure()
-
-
-# ==========================================================
-# ACTIVITY BARS
-# ==========================================================
-
-fig.add_trace(
-
+pareto_fig.add_trace(
     go.Bar(
-
         x=pareto_df["Rank"],
-
         y=pareto_df[value_col],
-
-        marker=dict(
-            color=color_bar
-        ),
-
+        marker=dict(color=color_bar),
         name=value_title,
-
-        hovertemplate=
-            "<b>User Rank %{x}</b><br>"
-            + hover_value_label
-            + ": "
-            + value_format
-            + "<extra></extra>"
-    )
-)
-
-
-# ==========================================================
-# CUMULATIVE LINE
-# ==========================================================
-
-fig.add_trace(
-
-    go.Scatter(
-
-        x=pareto_df["Rank"],
-
-        y=pareto_df["CumPct"],
-
-        mode="lines",
-
-        line=dict(
-            color=color_line,
-            width=4
+        hovertemplate=(
+            "<b>User Rank %{x}</b><br>" + hover_value_label + ": " + value_format + "<extra></extra>"
         ),
-
-        yaxis="y2",
-
-        name="Cumulative Share",
-
-        hovertemplate=
-            "<b>User Rank %{x}</b><br>"
-            "Cumulative Share: %{y:.2f}%"
-            "<extra></extra>"
     )
 )
 
-
-# ==========================================================
-# PARETO REFERENCE LEVELS
-# ==========================================================
+pareto_fig.add_trace(
+    go.Scatter(
+        x=pareto_df["Rank"],
+        y=pareto_df["CumPct"],
+        mode="lines",
+        line=dict(color=color_line, width=4),
+        yaxis="y2",
+        name="Cumulative Share",
+        hovertemplate="<b>User Rank %{x}</b><br>Cumulative Share: %{y:.2f}%<extra></extra>",
+    )
+)
 
 levels = [50, 80, 95]
+level_colors = {50: "#4CAF50", 80: "#FF9800", 95: "#F44336"}
 
-level_colors = {
-    50: "#4CAF50",
-    80: "#FF9800",
-    95: "#F44336"
-}
+if total_users > 0 and total_activity > 0:
+    for level in levels:
+        matching_rows = pareto_df.index[pareto_df["CumPct"] >= level]
+        if len(matching_rows) == 0:
+            continue
 
+        idx = matching_rows[0]
+        rank = int(pareto_df.loc[idx, "Rank"])
+        pct_users = rank / total_users * 100
 
-for level in levels:
-
-    if total_users == 0 or total_activity <= 0:
-        continue
-
-    matching_rows = pareto_df.index[
-        pareto_df["CumPct"] >= level
-    ]
-
-    if len(matching_rows) == 0:
-        continue
-
-    idx = matching_rows[0]
-
-    rank = int(
-        pareto_df.loc[idx, "Rank"]
-    )
-
-    pct_users = (
-        rank
-        / total_users
-        * 100
-    )
-
-
-    # Horizontal reference line
-    fig.add_hline(
-
-        y=level,
-
-        line_dash="dot",
-
-        line_color=level_colors[level],
-
-        yref="y2"
-    )
-
-
-    # Vertical reference line
-    fig.add_vline(
-
-        x=rank,
-
-        line_dash="dot",
-
-        line_color=level_colors[level]
-    )
-
-
-    # Annotation
-    fig.add_annotation(
-
-        x=rank,
-
-        y=level,
-
-        yref="y2",
-
-        showarrow=True,
-
-        arrowhead=2,
-
-        bgcolor="white",
-
-        bordercolor=level_colors[level],
-
-        borderwidth=1,
-
-        text=(
-            f"<b>{level}% of Activity</b><br>"
-            f"Top {pct_users:.2f}% Users"
+        pareto_fig.add_hline(y=level, line_dash="dot", line_color=level_colors[level], yref="y2")
+        pareto_fig.add_vline(x=rank, line_dash="dot", line_color=level_colors[level])
+        pareto_fig.add_annotation(
+            x=rank,
+            y=level,
+            yref="y2",
+            showarrow=True,
+            arrowhead=2,
+            bgcolor="white",
+            bordercolor=level_colors[level],
+            borderwidth=1,
+            text=f"<b>{level}% of Activity</b><br>Top {pct_users:.2f}% Users",
         )
-    )
 
-
-# ==========================================================
-# LAYOUT
-# ==========================================================
-
-fig.update_layout(
-
+pareto_fig.update_layout(
     template="plotly_white",
-
     height=620,
-
     hovermode="x unified",
-
-    margin=dict(
-        l=20,
-        r=20,
-        t=80,
-        b=20
-    ),
-
+    margin=dict(l=20, r=20, t=80, b=20),
     title=(
-        f"Pareto Analysis — {metric}"
-        "<br>"
-        "<sup>"
-        "Users ranked from highest to lowest activity with cumulative "
-        "activity contribution shown on the secondary axis."
-        "</sup>"
+        f"Pareto Analysis — {pareto_metric}"
+        "<br><sup>Users ranked from highest to lowest activity with cumulative "
+        "activity contribution shown on the secondary axis.</sup>"
     ),
-
-    xaxis=dict(
-
-        title="Users Ranked by Activity",
-
-        showgrid=False,
-
-        zeroline=False
-    ),
-
-    yaxis=dict(
-
-        title=value_title,
-
-        gridcolor="rgba(0,0,0,0.08)"
-    ),
-
+    xaxis=dict(title="Users Ranked by Activity", showgrid=False, zeroline=False),
+    yaxis=dict(title=value_title, gridcolor="rgba(0,0,0,0.08)"),
     yaxis2=dict(
-
-        title="Cumulative Share (%)",
-
-        overlaying="y",
-
-        side="right",
-
-        range=[0, 100],
-
-        showgrid=False,
-
-        ticksuffix="%"
+        title="Cumulative Share (%)", overlaying="y", side="right",
+        range=[0, 100], showgrid=False, ticksuffix="%",
     ),
-
-    legend=dict(
-
-        orientation="h",
-
-        yanchor="bottom",
-
-        y=1.02,
-
-        xanchor="left",
-
-        x=0
-    )
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
 )
 
-
-# ==========================================================
-# DISPLAY
-# ==========================================================
-
-st.plotly_chart(
-    fig,
-    width="stretch",
-    key="user_activity_pareto_chart"
-)
-
-# ==========================================================
-# LORENZ CURVE
-# ==========================================================
-
-fig.add_trace(
-
-    go.Scatter(
-
-        x=lorenz_x,
-
-        y=lorenz_y,
-
-        mode="lines",
-
-        line=dict(
-            color=color,
-            width=4
-        ),
-
-        customdata=hover_text,
-
-        hovertemplate=
-            "%{customdata}"
-            "<extra></extra>",
-
-        name="Lorenz Curve"
-    )
-)
-
-
-# ==========================================================
-# GINI ANNOTATION
-# ==========================================================
-
-fig.add_annotation(
-
-    x=0.65,
-
-    y=0.18,
-
-    showarrow=False,
-
-    align="left",
-
-    bgcolor="rgba(255,255,255,0.92)",
-
-    bordercolor=color,
-
-    borderwidth=1,
-
-    text=(
-        f"<b>Gini Coefficient</b><br>"
-        f"{gini:.3f}"
-        f"<br><br>"
-        f"<b>{interpretation}</b>"
-    )
-)
-
-
-# ==========================================================
-# LAYOUT
-# ==========================================================
-
-fig.update_layout(
-
-    template="plotly_white",
-
-    height=600,
-
-    title=(
-        f"Lorenz Curve ({metric})"
-        f" — Gini = {gini:.3f}"
-    ),
-
-    margin=dict(
-        l=20,
-        r=20,
-        t=70,
-        b=20
-    ),
-
-    hovermode="closest",
-
-    legend=dict(
-        orientation="h",
-        y=1.03,
-        x=0
-    ),
-
-    xaxis=dict(
-
-        title=x_title,
-
-        tickformat=".0%",
-
-        range=[0, 1],
-
-        showgrid=True,
-
-        gridcolor="rgba(0,0,0,0.08)",
-
-        zeroline=False
-    ),
-
-    yaxis=dict(
-
-        title=y_title,
-
-        tickformat=".0%",
-
-        range=[0, 1],
-
-        showgrid=True,
-
-        gridcolor="rgba(0,0,0,0.08)",
-
-        zeroline=False
-    )
-)
-
-
-# ==========================================================
-# CORNER LABELS
-# ==========================================================
-
-fig.add_annotation(
-
-    x=0.90,
-
-    y=0.96,
-
-    text="<b>Perfect Equality</b>",
-
-    showarrow=False,
-
-    font=dict(
-        color="gray",
-        size=12
-    )
-)
-
-
-fig.add_annotation(
-
-    x=0.42,
-
-    y=0.25,
-
-    text="<b>Current Distribution</b>",
-
-    showarrow=False,
-
-    font=dict(
-        color=color,
-        size=12
-    )
-)
-
-
-# ==========================================================
-# RENDER
-# ==========================================================
-
-st.plotly_chart(
-    fig,
-    width="stretch",
-    key="user_lorenz_curve"
-)
+st.plotly_chart(pareto_fig, use_container_width=True, key="user_activity_pareto_chart")
