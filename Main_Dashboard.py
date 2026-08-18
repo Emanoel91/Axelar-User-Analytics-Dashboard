@@ -1464,7 +1464,452 @@ lifecycle_df["Month"] = (
     )
     .dt.strftime("%Y-%m")
 )
+# ==========================================================
+# PROFESSIONAL LORENZ CURVE
+# ==========================================================
 
+st.subheader("📈 Lorenz Curve")
+
+st.caption(
+    "The Lorenz Curve visualizes how evenly activity is distributed across users. "
+    "The farther the curve deviates from the line of perfect equality, "
+    "the more concentrated the network activity becomes."
+)
+
+# ==========================================================
+# AGGREGATE USER DATA
+# ==========================================================
+
+lorenz_user_df = (
+    all_data
+    .groupby("key", as_index=False)
+    .agg(
+        volume=("volume", "sum"),
+        num_txs=("num_txs", "sum")
+    )
+)
+
+# Ensure numeric values
+lorenz_user_df["volume"] = pd.to_numeric(
+    lorenz_user_df["volume"],
+    errors="coerce"
+).fillna(0)
+
+lorenz_user_df["num_txs"] = pd.to_numeric(
+    lorenz_user_df["num_txs"],
+    errors="coerce"
+).fillna(0)
+
+
+# ==========================================================
+# METRIC SELECTOR
+# ==========================================================
+
+metric = st.selectbox(
+    "Metric",
+    ["Volume", "Transactions"],
+    key="lorenz_metric_global"
+)
+
+
+# ==========================================================
+# SELECT METRIC
+# ==========================================================
+
+if metric == "Volume":
+
+    values = (
+        lorenz_user_df["volume"]
+        .clip(lower=0)
+        .sort_values()
+        .reset_index(drop=True)
+    )
+
+    x_title = "Cumulative Share of Users"
+
+    y_title = "Cumulative Share of Volume"
+
+    color = "#c58ce2"
+
+else:
+
+    values = (
+        lorenz_user_df["num_txs"]
+        .clip(lower=0)
+        .sort_values()
+        .reset_index(drop=True)
+    )
+
+    x_title = "Cumulative Share of Users"
+
+    y_title = "Cumulative Share of Transactions"
+
+    color = "#e1fb43"
+
+
+# ==========================================================
+# REMOVE ZERO-ACTIVITY USERS
+# ==========================================================
+
+values = (
+    values[
+        values > 0
+    ]
+    .reset_index(drop=True)
+)
+
+n = len(values)
+
+
+if n == 0:
+
+    st.info(
+        "No users with positive activity found."
+    )
+
+    st.stop()
+
+
+# ==========================================================
+# LORENZ CURVE DATA
+# ==========================================================
+
+cum_users = (
+    np.arange(1, n + 1)
+    / n
+)
+
+cum_values = (
+    values.cumsum()
+    / values.sum()
+)
+
+lorenz_x = np.insert(
+    np.asarray(cum_users),
+    0,
+    0
+)
+
+lorenz_y = np.insert(
+    np.asarray(cum_values),
+    0,
+    0
+)
+
+
+# ==========================================================
+# GINI COEFFICIENT
+# ==========================================================
+
+gini = (
+    np.sum(
+        (
+            2 * np.arange(1, n + 1)
+            - n
+            - 1
+        )
+        * values
+    )
+    /
+    (
+        n
+        * values.sum()
+    )
+)
+
+
+# ==========================================================
+# GAP FROM PERFECT EQUALITY
+# ==========================================================
+
+gap = (
+    lorenz_x
+    - lorenz_y
+)
+
+
+hover_text = [
+
+    (
+        f"<b>Users:</b> {x * 100:.2f}%"
+        f"<br>"
+        f"<b>Activity:</b> {y * 100:.2f}%"
+        f"<br>"
+        f"<b>Inequality Gap:</b> {g * 100:.2f}%"
+    )
+
+    for x, y, g in zip(
+        lorenz_x,
+        lorenz_y,
+        gap
+    )
+]
+
+
+# ==========================================================
+# INEQUALITY INTERPRETATION
+# ==========================================================
+
+if gini < 0.30:
+
+    interpretation = "Low Inequality"
+
+elif gini < 0.60:
+
+    interpretation = "Moderate Inequality"
+
+elif gini < 0.80:
+
+    interpretation = "High Inequality"
+
+else:
+
+    interpretation = "Extreme Concentration"
+
+
+# ==========================================================
+# CREATE FIGURE
+# ==========================================================
+
+fig = go.Figure()
+
+
+# ==========================================================
+# PERFECT EQUALITY LINE
+# ==========================================================
+
+fig.add_trace(
+
+    go.Scatter(
+
+        x=[0, 1],
+
+        y=[0, 1],
+
+        mode="lines",
+
+        line=dict(
+            color="gray",
+            width=2,
+            dash="dash"
+        ),
+
+        name="Perfect Equality",
+
+        hoverinfo="skip"
+    )
+)
+
+
+# ==========================================================
+# INEQUALITY AREA
+# ==========================================================
+
+fig.add_trace(
+
+    go.Scatter(
+
+        x=np.concatenate(
+            [
+                lorenz_x,
+                lorenz_x[::-1]
+            ]
+        ),
+
+        y=np.concatenate(
+            [
+                lorenz_x,
+                lorenz_y[::-1]
+            ]
+        ),
+
+        fill="toself",
+
+        fillcolor=(
+            "rgba(197,140,226,0.20)"
+            if metric == "Volume"
+            else "rgba(225,251,67,0.20)"
+        ),
+
+        line=dict(
+            color="rgba(0,0,0,0)"
+        ),
+
+        hoverinfo="skip",
+
+        name="Inequality Area"
+    )
+)
+
+
+# ==========================================================
+# LORENZ CURVE
+# ==========================================================
+
+fig.add_trace(
+
+    go.Scatter(
+
+        x=lorenz_x,
+
+        y=lorenz_y,
+
+        mode="lines",
+
+        line=dict(
+            color=color,
+            width=4
+        ),
+
+        customdata=hover_text,
+
+        hovertemplate=
+            "%{customdata}"
+            "<extra></extra>",
+
+        name="Lorenz Curve"
+    )
+)
+
+
+# ==========================================================
+# GINI ANNOTATION
+# ==========================================================
+
+fig.add_annotation(
+
+    x=0.65,
+
+    y=0.18,
+
+    showarrow=False,
+
+    align="left",
+
+    bgcolor="rgba(255,255,255,0.92)",
+
+    bordercolor=color,
+
+    borderwidth=1,
+
+    text=(
+        f"<b>Gini Coefficient</b><br>"
+        f"{gini:.3f}"
+        f"<br><br>"
+        f"<b>{interpretation}</b>"
+    )
+)
+
+
+# ==========================================================
+# LAYOUT
+# ==========================================================
+
+fig.update_layout(
+
+    template="plotly_white",
+
+    height=600,
+
+    title=(
+        f"Lorenz Curve ({metric})"
+        f" — Gini = {gini:.3f}"
+    ),
+
+    margin=dict(
+        l=20,
+        r=20,
+        t=70,
+        b=20
+    ),
+
+    hovermode="closest",
+
+    legend=dict(
+        orientation="h",
+        y=1.03,
+        x=0
+    ),
+
+    xaxis=dict(
+
+        title=x_title,
+
+        tickformat=".0%",
+
+        range=[0, 1],
+
+        showgrid=True,
+
+        gridcolor="rgba(0,0,0,0.08)",
+
+        zeroline=False
+    ),
+
+    yaxis=dict(
+
+        title=y_title,
+
+        tickformat=".0%",
+
+        range=[0, 1],
+
+        showgrid=True,
+
+        gridcolor="rgba(0,0,0,0.08)",
+
+        zeroline=False
+    )
+)
+
+
+# ==========================================================
+# CORNER LABELS
+# ==========================================================
+
+fig.add_annotation(
+
+    x=0.90,
+
+    y=0.96,
+
+    text="<b>Perfect Equality</b>",
+
+    showarrow=False,
+
+    font=dict(
+        color="gray",
+        size=12
+    )
+)
+
+
+fig.add_annotation(
+
+    x=0.42,
+
+    y=0.25,
+
+    text="<b>Current Distribution</b>",
+
+    showarrow=False,
+
+    font=dict(
+        color=color,
+        size=12
+    )
+)
+
+
+# ==========================================================
+# RENDER
+# ==========================================================
+
+st.plotly_chart(
+    fig,
+    width="stretch",
+    key="user_lorenz_curve"
+)
 # ==========================================================
 # PROFESSIONAL USER PARETO ANALYSIS
 # ==========================================================
