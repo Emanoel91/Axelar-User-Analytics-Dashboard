@@ -501,52 +501,25 @@ with kpi11:
 # ==========================================================
 # KPI Row 4 — Advanced Distribution Metrics
 # ==========================================================
-
-total_volume = user_stats["Total_Volume"].sum()
-
-top100_volume = user_stats.nlargest(100, "Total_Volume")["Total_Volume"].sum()
-top100_share = (top100_volume / total_volume * 100) if total_volume > 0 else 0
-
-n_whales = max(1, int(len(user_stats) * 0.01))
-whale_volume = user_stats.nlargest(n_whales, "Total_Volume")["Total_Volume"].sum()
-whale_dominance = (whale_volume / total_volume * 100) if total_volume > 0 else 0
-
-volumes = user_stats["Total_Volume"].fillna(0).to_numpy()
-gini = gini_coefficient(volumes)
-
-pos_volumes = volumes[volumes >= 0]
-hhi = ((pos_volumes / pos_volumes.sum()) ** 2).sum() if pos_volumes.sum() > 0 else 0
-
-kpi12, kpi13, kpi14, kpi15 = st.columns(4)
-
-with kpi12:
-    st.metric(
-        "Top 100 Users Share",
-        f"{top100_share:.2f}%",
-        help="Percentage of the total transfer volume contributed by the top 100 users.",
-    )
-
-with kpi13:
-    st.metric(
-        "Whale Dominance",
-        f"{whale_dominance:.2f}%",
-        help="Percentage of the total transfer volume contributed by the top 1% highest-volume users.",
-    )
-
-with kpi14:
-    st.metric(
-        "Gini Coefficient",
-        f"{gini:.3f}",
-        help="Measures inequality in transfer volume distribution across users. Values closer to 1 indicate higher concentration.",
-    )
-
-with kpi15:
-    st.metric(
-        "Herfindahl Index",
-        f"{hhi:.4f}",
-        help="Measures concentration of transfer volume among users. Higher values indicate greater concentration.",
-    )
-
+#total_volume = user_stats["Total_Volume"].sum()
+#top100_volume = user_stats.nlargest(100, "Total_Volume")["Total_Volume"].sum()
+#top100_share = (top100_volume / total_volume * 100) if total_volume > 0 else 0
+#n_whales = max(1, int(len(user_stats) * 0.01))
+#whale_volume = user_stats.nlargest(n_whales, "Total_Volume")["Total_Volume"].sum()
+#whale_dominance = (whale_volume / total_volume * 100) if total_volume > 0 else 0
+#volumes = user_stats["Total_Volume"].fillna(0).to_numpy()
+#gini = gini_coefficient(volumes)
+#pos_volumes = volumes[volumes >= 0]
+#hhi = ((pos_volumes / pos_volumes.sum()) ** 2).sum() if pos_volumes.sum() > 0 else 0
+#kpi12, kpi13, kpi14, kpi15 = st.columns(4)
+#with kpi12:
+#    st.metric("Top 100 Users Share",f"{top100_share:.2f}%",help="Percentage of the total transfer volume contributed by the top 100 users.",)
+#with kpi13:
+#    st.metric("Whale Dominance",f"{whale_dominance:.2f}%",help="Percentage of the total transfer volume contributed by the top 1% highest-volume users.",)
+#with kpi14:
+#    st.metric("Gini Coefficient",f"{gini:.3f}",help="Measures inequality in transfer volume distribution across users. Values closer to 1 indicate higher concentration.",#)
+#with kpi15:
+#    st.metric("Herfindahl Index", f"{hhi:.4f}", help="Measures concentration of transfer volume among users. Higher values indicate greater concentration.",)
 # ==========================================================
 # User Lifecycle Charts
 # ==========================================================
