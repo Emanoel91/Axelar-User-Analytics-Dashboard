@@ -863,7 +863,7 @@ pareto_fig.update_layout(
         title="Cumulative Share (%)", overlaying="y", side="right",
         range=[0, 100], showgrid=False, ticksuffix="%",
     ),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.2),
 )
 
 st.plotly_chart(pareto_fig, use_container_width=True, key="user_activity_pareto_chart")
