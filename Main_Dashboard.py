@@ -1742,174 +1742,7 @@ fig.add_trace(
 )
 
 
-# ==========================================================
-# LORENZ CURVE
-# ==========================================================
 
-fig.add_trace(
-
-    go.Scatter(
-
-        x=lorenz_x,
-
-        y=lorenz_y,
-
-        mode="lines",
-
-        line=dict(
-            color=color,
-            width=4
-        ),
-
-        customdata=hover_text,
-
-        hovertemplate=
-            "%{customdata}"
-            "<extra></extra>",
-
-        name="Lorenz Curve"
-    )
-)
-
-
-# ==========================================================
-# GINI ANNOTATION
-# ==========================================================
-
-fig.add_annotation(
-
-    x=0.65,
-
-    y=0.18,
-
-    showarrow=False,
-
-    align="left",
-
-    bgcolor="rgba(255,255,255,0.92)",
-
-    bordercolor=color,
-
-    borderwidth=1,
-
-    text=(
-        f"<b>Gini Coefficient</b><br>"
-        f"{gini:.3f}"
-        f"<br><br>"
-        f"<b>{interpretation}</b>"
-    )
-)
-
-
-# ==========================================================
-# LAYOUT
-# ==========================================================
-
-fig.update_layout(
-
-    template="plotly_white",
-
-    height=600,
-
-    title=(
-        f"Lorenz Curve ({metric})"
-        f" — Gini = {gini:.3f}"
-    ),
-
-    margin=dict(
-        l=20,
-        r=20,
-        t=70,
-        b=20
-    ),
-
-    hovermode="closest",
-
-    legend=dict(
-        orientation="h",
-        y=1.03,
-        x=0
-    ),
-
-    xaxis=dict(
-
-        title=x_title,
-
-        tickformat=".0%",
-
-        range=[0, 1],
-
-        showgrid=True,
-
-        gridcolor="rgba(0,0,0,0.08)",
-
-        zeroline=False
-    ),
-
-    yaxis=dict(
-
-        title=y_title,
-
-        tickformat=".0%",
-
-        range=[0, 1],
-
-        showgrid=True,
-
-        gridcolor="rgba(0,0,0,0.08)",
-
-        zeroline=False
-    )
-)
-
-
-# ==========================================================
-# CORNER LABELS
-# ==========================================================
-
-fig.add_annotation(
-
-    x=0.90,
-
-    y=0.96,
-
-    text="<b>Perfect Equality</b>",
-
-    showarrow=False,
-
-    font=dict(
-        color="gray",
-        size=12
-    )
-)
-
-
-fig.add_annotation(
-
-    x=0.42,
-
-    y=0.25,
-
-    text="<b>Current Distribution</b>",
-
-    showarrow=False,
-
-    font=dict(
-        color=color,
-        size=12
-    )
-)
-
-
-# ==========================================================
-# RENDER
-# ==========================================================
-
-st.plotly_chart(
-    fig,
-    width="stretch",
-    key="user_lorenz_curve"
-)
 # ==========================================================
 # PROFESSIONAL USER PARETO ANALYSIS
 # ==========================================================
@@ -2273,3 +2106,171 @@ st.plotly_chart(
     key="user_activity_pareto_chart"
 )
 
+# ==========================================================
+# LORENZ CURVE
+# ==========================================================
+
+fig.add_trace(
+
+    go.Scatter(
+
+        x=lorenz_x,
+
+        y=lorenz_y,
+
+        mode="lines",
+
+        line=dict(
+            color=color,
+            width=4
+        ),
+
+        customdata=hover_text,
+
+        hovertemplate=
+            "%{customdata}"
+            "<extra></extra>",
+
+        name="Lorenz Curve"
+    )
+)
+
+
+# ==========================================================
+# GINI ANNOTATION
+# ==========================================================
+
+fig.add_annotation(
+
+    x=0.65,
+
+    y=0.18,
+
+    showarrow=False,
+
+    align="left",
+
+    bgcolor="rgba(255,255,255,0.92)",
+
+    bordercolor=color,
+
+    borderwidth=1,
+
+    text=(
+        f"<b>Gini Coefficient</b><br>"
+        f"{gini:.3f}"
+        f"<br><br>"
+        f"<b>{interpretation}</b>"
+    )
+)
+
+
+# ==========================================================
+# LAYOUT
+# ==========================================================
+
+fig.update_layout(
+
+    template="plotly_white",
+
+    height=600,
+
+    title=(
+        f"Lorenz Curve ({metric})"
+        f" — Gini = {gini:.3f}"
+    ),
+
+    margin=dict(
+        l=20,
+        r=20,
+        t=70,
+        b=20
+    ),
+
+    hovermode="closest",
+
+    legend=dict(
+        orientation="h",
+        y=1.03,
+        x=0
+    ),
+
+    xaxis=dict(
+
+        title=x_title,
+
+        tickformat=".0%",
+
+        range=[0, 1],
+
+        showgrid=True,
+
+        gridcolor="rgba(0,0,0,0.08)",
+
+        zeroline=False
+    ),
+
+    yaxis=dict(
+
+        title=y_title,
+
+        tickformat=".0%",
+
+        range=[0, 1],
+
+        showgrid=True,
+
+        gridcolor="rgba(0,0,0,0.08)",
+
+        zeroline=False
+    )
+)
+
+
+# ==========================================================
+# CORNER LABELS
+# ==========================================================
+
+fig.add_annotation(
+
+    x=0.90,
+
+    y=0.96,
+
+    text="<b>Perfect Equality</b>",
+
+    showarrow=False,
+
+    font=dict(
+        color="gray",
+        size=12
+    )
+)
+
+
+fig.add_annotation(
+
+    x=0.42,
+
+    y=0.25,
+
+    text="<b>Current Distribution</b>",
+
+    showarrow=False,
+
+    font=dict(
+        color=color,
+        size=12
+    )
+)
+
+
+# ==========================================================
+# RENDER
+# ==========================================================
+
+st.plotly_chart(
+    fig,
+    width="stretch",
+    key="user_lorenz_curve"
+)
