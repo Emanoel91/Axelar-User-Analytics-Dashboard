@@ -846,3 +846,393 @@ if bucketed:
         "to keep the chart lightweight. The 50/80/95% reference markers above are computed "
         "on the full, unbucketed data."
     )
+
+# ==========================================================
+# USER RETENTION COHORT ANALYSIS
+# ==========================================================
+
+st.subheader("📊 User Retention Cohort Analysis")
+
+st.caption(
+    "Measures the percentage of users from each monthly cohort who remain active "
+    "in subsequent months. A user is considered active if they perform at least "
+    "one transaction during the month, regardless of the service used."
+)
+
+
+# ==========================================================
+# PREPARE MONTHLY USER ACTIVITY
+# ==========================================================
+
+cohort_data = all_data[
+    ["key", "Month"]
+].copy()
+
+cohort_data["Month"] = pd.to_datetime(
+    cohort_data["Month"],
+    format="%Y-%m",
+    errors="coerce"
+)
+
+cohort_data = cohort_data.dropna(
+    subset=["key", "Month"]
+)
+
+# One user = one activity record per month
+cohort_data = (
+    cohort_data[
+        ["key", "Month"]
+    ]
+    .drop_duplicates()
+)
+
+
+# ==========================================================
+# FIND FIRST ACTIVE MONTH FOR EACH USER
+# ==========================================================
+
+first_active = (
+    cohort_data
+    .groupby("key")["Month"]
+    .min()
+    .reset_index()
+    .rename(
+        columns={
+            "Month": "Cohort Month"
+        }
+    )
+)
+
+
+# ==========================================================
+# MERGE COHORT INFORMATION
+# ==========================================================
+
+cohort_data = cohort_data.merge(
+    first_active,
+    on="key",
+    how="left"
+)
+
+
+# ==========================================================
+# CALCULATE MONTH INDEX
+# ==========================================================
+
+cohort_data["Cohort Index"] = (
+
+    (
+        cohort_data["Month"].dt.year
+        - cohort_data["Cohort Month"].dt.year
+    ) * 12
+
+    +
+
+    (
+        cohort_data["Month"].dt.month
+        - cohort_data["Cohort Month"].dt.month
+    )
+
+)
+
+
+# ==========================================================
+# COHORT SIZE
+# ==========================================================
+
+cohort_sizes = (
+    first_active
+    .groupby("Cohort Month")["key"]
+    .nunique()
+    .rename("Cohort Users")
+)
+
+
+# ==========================================================
+# ACTIVE USERS BY COHORT
+# ==========================================================
+
+cohort_activity = (
+
+    cohort_data
+    .groupby(
+        [
+            "Cohort Month",
+            "Cohort Index"
+        ]
+    )["key"]
+    .nunique()
+    .reset_index(name="Active Users")
+)
+
+
+# ==========================================================
+# CALCULATE RETENTION RATE
+# ==========================================================
+
+cohort_activity["Cohort Users"] = (
+
+    cohort_activity["Cohort Month"]
+    .map(cohort_sizes)
+
+)
+
+cohort_activity["Retention Rate"] = (
+
+    cohort_activity["Active Users"]
+    /
+    cohort_activity["Cohort Users"]
+    * 100
+
+)
+
+
+# ==========================================================
+# COHORT RETENTION MATRIX
+# ==========================================================
+
+retention_matrix = (
+
+    cohort_activity
+    .pivot(
+        index="Cohort Month",
+        columns="Cohort Index",
+        values="Retention Rate"
+    )
+)
+
+
+# ==========================================================
+# SORT COHORTS
+# ==========================================================
+
+retention_matrix = retention_matrix.sort_index()
+
+
+# ==========================================================
+# RENAME COLUMNS
+# ==========================================================
+
+retention_matrix.columns = [
+    f"Month {int(x)}"
+    for x in retention_matrix.columns
+]
+
+
+# ==========================================================
+# HEATMAP
+# ==========================================================
+
+fig_cohort = px.imshow(
+
+    retention_matrix,
+
+    text_auto=".1f",
+
+    aspect="auto",
+
+    color_continuous_scale=[
+        "#f5f5f5",
+        "#c58ce2",
+        "#8e44ad"
+    ],
+
+    labels={
+        "x": "Months Since Cohort",
+        "y": "Cohort Month",
+        "color": "Retention (%)"
+    }
+)
+
+
+fig_cohort.update_layout(
+
+    template="plotly_white",
+
+    height=650,
+
+    title=(
+        "User Retention by Cohort"
+        "<br>"
+        "<sup>"
+        "Percentage of users from each cohort who remained active "
+        "in subsequent months."
+        "</sup>"
+    ),
+
+    margin=dict(
+        l=20,
+        r=20,
+        t=80,
+        b=20
+    ),
+
+    xaxis=dict(
+        title="Months Since Cohort"
+    ),
+
+    yaxis=dict(
+        title="Cohort Month"
+    ),
+
+    coloraxis_colorbar=dict(
+        title="Retention (%)"
+    )
+)
+
+
+fig_cohort.update_traces(
+
+    hovertemplate=
+    "<b>Cohort:</b> %{y}<br>"
+    "<b>Period:</b> %{x}<br>"
+    "<b>Retention:</b> %{z:.2f}%"
+    "<extra></extra>"
+)
+
+
+# ==========================================================
+# DISPLAY HEATMAP
+# ==========================================================
+
+st.plotly_chart(
+
+    fig_cohort,
+
+    width="stretch",
+
+    key="user_retention_cohort_heatmap"
+
+)
+
+
+# ==========================================================
+# DETAILED COHORT TABLE
+# ==========================================================
+
+st.subheader("📋 Detailed Cohort Retention")
+
+st.caption(
+    "Detailed cohort-level retention data including cohort size, "
+    "active users and retention rate for each subsequent month."
+)
+
+
+# ==========================================================
+# PREPARE TABLE
+# ==========================================================
+
+cohort_table = cohort_activity.copy()
+
+
+cohort_table["Cohort Month"] = (
+
+    cohort_table["Cohort Month"]
+    .dt.strftime("%Y-%m")
+
+)
+
+
+cohort_table["Period"] = (
+
+    "Month "
+    +
+    cohort_table["Cohort Index"]
+    .astype(int)
+    .astype(str)
+
+)
+
+
+cohort_table = cohort_table[
+    [
+        "Cohort Month",
+        "Period",
+        "Cohort Index",
+        "Cohort Users",
+        "Active Users",
+        "Retention Rate"
+    ]
+]
+
+
+# ==========================================================
+# FORMAT TABLE
+# ==========================================================
+
+cohort_table = cohort_table.rename(
+
+    columns={
+        "Cohort Month": "Cohort",
+        "Cohort Index": "Month Index",
+        "Cohort Users": "Cohort Size",
+        "Active Users": "Active Users",
+        "Retention Rate": "Retention (%)"
+    }
+
+)
+
+
+cohort_table["Retention (%)"] = (
+
+    cohort_table["Retention (%)"]
+    .round(2)
+
+)
+
+
+cohort_table = cohort_table.sort_values(
+
+    [
+        "Cohort",
+        "Month Index"
+    ]
+
+)
+
+
+# ==========================================================
+# DISPLAY TABLE
+# ==========================================================
+
+st.dataframe(
+
+    cohort_table,
+
+    width="stretch",
+
+    hide_index=True,
+
+    column_config={
+
+        "Cohort": st.column_config.TextColumn(
+            "Cohort",
+            help="Month in which users first became active."
+        ),
+
+        "Period": st.column_config.TextColumn(
+            "Period",
+            help="Number of months since the cohort's first activity."
+        ),
+
+        "Month Index": st.column_config.NumberColumn(
+            "Month Index",
+            help="0 = cohort month, 1 = one month later, 2 = two months later, etc."
+        ),
+
+        "Cohort Size": st.column_config.NumberColumn(
+            "Cohort Size",
+            format="%d"
+        ),
+
+        "Active Users": st.column_config.NumberColumn(
+            "Active Users",
+            format="%d"
+        ),
+
+        "Retention (%)": st.column_config.NumberColumn(
+            "Retention (%)",
+            format="%.2f%%"
+        )
+    }
+)
