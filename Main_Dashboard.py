@@ -429,35 +429,7 @@ user_growth = last_growth["User Growth Rate"]
 user_growth = 0.0 if pd.isna(user_growth) else user_growth
 mau = int(last_growth["Active Users"])
 
-kpi4, kpi5, kpi6, kpi7 = st.columns(4)
 
-with kpi4:
-    st.metric(
-        "Reactivated Users",
-        f"{reactivated_users:,}",
-        help="Users who were active in the latest month, inactive in the previous month, but had activity before that.",
-    )
-
-with kpi5:
-    st.metric(
-        "Churned Users",
-        f"{churned_users:,}",
-        help="Users who were active in the previous month but were not active in the latest month.",
-    )
-
-with kpi6:
-    st.metric(
-        "User Growth %",
-        f"{user_growth:.2f}%",
-        help="Percentage change in Monthly Active Users (MAU) compared with the previous month.",
-    )
-
-with kpi7:
-    st.metric(
-        "Monthly Active Users",
-        f"{mau:,}",
-        help="Total number of unique users who were active in the latest month.",
-    )
 
 # ==========================================================
 # KPI Row 3 — User-Level Statistics
