@@ -8,16 +8,23 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import plotly.express as px
 
-# ==========================================================
-# Page Config
-# ==========================================================
-
+# --- Page Config: Tab Title & Icon -------------------------------------------------------------------------------------
 st.set_page_config(
     page_title="Axelar User Analytics",
-    layout="wide",
+    page_icon="https://axelarscan.io/logos/logo.png",
+    layout="wide"
 )
 
-st.title("📊 Axelar User Analytics Dashboard")
+# --- Title with Logo ---------------------------------------------------------------------------------------------------
+st.markdown(
+    """
+    <div style="display: flex; align-items: center; gap: 15px;">
+        <img src="https://axelarscan.io/logos/logo.png" alt="axelar Logo" style="width:60px; height:60px;">
+        <h1 style="margin: 0;">Axelar User Analytics</h1>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # --- Builder Info ---------------------------------------------------------------------------------------------------------
 st.markdown(
