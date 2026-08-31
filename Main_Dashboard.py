@@ -964,7 +964,7 @@ fig_cohort.update_layout(
 
     template="plotly_white",
 
-    height=650,
+    height=1200,
 
     title=(
         "User Retention by Cohort"
